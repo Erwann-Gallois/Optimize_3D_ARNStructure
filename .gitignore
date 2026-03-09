@@ -1,0 +1,4 @@
+*.pdb
+/__pycache__/*
+/logs/*
+/potentials/*
