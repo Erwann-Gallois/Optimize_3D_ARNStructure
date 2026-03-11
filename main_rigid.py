@@ -1,5 +1,9 @@
+import torch
 from fonction import generer_arn_droit
 from classe.RNA_RASP_Rigid import RNA_RASP_Rigid
+
+# Force PyTorch à utiliser 50 threads sur le CPU
+torch.set_num_threads(50)
 
 # 1. Génération de la structure initiale (ARN droit)
 sequence_arn = "GGAACCGGUGCGCAUAACCACCUCAGUGCGAGCAA"
