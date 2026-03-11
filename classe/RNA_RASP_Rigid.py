@@ -7,7 +7,7 @@ from biopandas.pdb import PandasPdb
 from parse_rasp_potentials import load_rasp_potentials, get_rasp_type
 
 class RNA_RASP_Rigid:
-    def __init__(self, pdb_path, lr=0.2, type_RASP="all", output_path="output_rigid.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5):
+    def __init__(self, pdb_path, lr=0.2, type_RASP="c3", output_path="output_rigid.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5):
         if not os.path.exists(pdb_path):
             raise FileNotFoundError(f"Le fichier PDB {pdb_path} n'existe pas.")
         
@@ -32,15 +32,15 @@ class RNA_RASP_Rigid:
     def load_dict_potentials(self):
         path = f"potentials/{self.type_RASP}.nrg"
         if os.path.exists(path):
-            dict_pots = load_rasp_potentials(path)
-            self.convert_dict_to_tensor(dict_pots)
+            taille_mat, dict_pots = load_rasp_potentials(path)
+            self.convert_dict_to_tensor(dict_pots, taille_mat)
         else:
             print(f"Fichier de potentiel non trouvé : {path}")
 
-    def convert_dict_to_tensor(self, dict_pots):
-        self.potential_tensor = torch.zeros((6, 23, 23, 20), dtype=torch.float32)
+    def convert_dict_to_tensor(self, dict_pots, taille_mat):
+        self.potential_tensor = torch.zeros(taille_mat, dtype=torch.float32)
         for (k, t1, t2, dist), energy in dict_pots.items():
-            if k < 6 and t1 < 23 and t2 < 23 and dist < 20:
+            if k < taille_mat[0] and t1 < taille_mat[1] and t2 < taille_mat[2] and dist < taille_mat[3]:
                 self.potential_tensor[k, t1, t2, dist] = energy
                 self.potential_tensor[k, t2, t1, dist] = energy
 

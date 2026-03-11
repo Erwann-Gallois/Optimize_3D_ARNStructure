@@ -96,3 +96,15 @@ def generer_arn_droit(sequence, fichier_sortie="arn_structure.pdb"):
             os.remove(script_tleap)
         if os.path.exists("leap.log"):
             os.remove("leap.log")
+
+def read_fasta_file (fasta_file):
+    if not os.path.exists(fasta_file):
+        raise FileNotFoundError(f"Le fichier {fasta_file} n'existe pas.")
+    if not os.path.endswith(".fasta"):
+        raise ValueError(f"Le fichier {fasta_file} n'est pas un fichier fasta.")
+    sequences = []
+    records = list(SeqIO.parse(fasta_file, "fasta"))
+    for record in records:
+        sequences.append(record.seq)
+    return sequences
+        

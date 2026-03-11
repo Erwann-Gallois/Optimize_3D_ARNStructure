@@ -1,5 +1,5 @@
 from fonction import generer_arn_droit
-from RNA_RASP_Rigid import RNA_RASP_Rigid
+from classe.RNA_RASP_Rigid import RNA_RASP_Rigid
 
 # 1. Génération de la structure initiale (ARN droit)
 sequence_arn = "GGAACCGGUGCGCAUAACCACCUCAGUGCGAGCAA"
@@ -11,12 +11,12 @@ generer_arn_droit(sequence_arn, pdb_initial)
 # ref_atom="C3'" par défaut
 opt = RNA_RASP_Rigid(
     pdb_initial, 
-    epochs_per_cycle=300,
+    epochs_per_cycle=100,
     lr=0.1,
     type_RASP="all",
     output_path="mon_arn_rigide_optimise.pdb",
     ref_atom="C3'",
-    num_cycles=20,
+    num_cycles=10,
     noise_coords=2,
     noise_angles=1
 )

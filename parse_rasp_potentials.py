@@ -94,13 +94,20 @@ def load_rasp_potentials(filepath):
     """
     with open(filepath, 'r') as f:
         lines = f.readlines()
-        
+    # Récupération de la taille de la matrice de potentiel
+    taille = lines[0:2][1]
+    taille_mat = taille.split("\t")
+    last = taille_mat.pop(-1)
+    last = last.split("\n")[0]
+    taille_mat.append(last)
+    taille_mat = list(map(int, taille_mat))
+    taille_mat = tuple(taille_mat)
     header_idx = 2
     for i, line in enumerate(lines[:10]):
         if line.startswith("# K"):
             header_idx = i
             break
-            
+
     rasp_dict = {}
     for line in lines[header_idx+1:]:
         if not line.strip(): continue
@@ -114,8 +121,7 @@ def load_rasp_potentials(filepath):
             
             rasp_dict[(k, t1, t2, dist)] = energy
             rasp_dict[(k, t2, t1, dist)] = energy
-            
-    return rasp_dict
+    return taille_mat, rasp_dict
 
 def get_rasp_type(res_name, atom_name):
     """
@@ -190,17 +196,3 @@ def calculer_score_rasp(pdb_path, potentials_dict):
         print(missing_atoms)
             
     return total_energy, pairs_scored
-
-if __name__ == "__main__":
-    print("Chargement des potentiels RASP...")
-    rasp_pots = load_rasp_potentials('potentials/all.nrg')
-    
-    pdb_file = 'structure_droite_sans_h.pdb'
-    print(f"Évaluation du fichier : {pdb_file}")
-    
-    try:
-        score, n_pairs = calculer_score_rasp(pdb_file, rasp_pots)
-        print(f"\n✅ Score RASP global : {score:.4f}")
-        print(f"Nombre de paires d'atomes évaluées : {n_pairs}")
-    except Exception as e:
-        print(f"❌ Erreur lors du calcul : {e}")
