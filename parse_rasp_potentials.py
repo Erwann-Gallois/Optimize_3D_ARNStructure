@@ -123,7 +123,7 @@ def load_rasp_potentials(filepath):
             rasp_dict[(k, t2, t1, dist)] = energy
     return taille_mat, rasp_dict
 
-def get_rasp_type(res_name, atom_name):
+def get_rasp_type(res_name, atom_name, type_RASP="all"):
     """
     Retourne le type d'atome RASP (0-22). 
     Retourne -1 si atome non supporté.
@@ -137,7 +137,7 @@ def get_rasp_type(res_name, atom_name):
     
     # Nettoyage atome PDB (souvent O5* au lieu de O5')
     atom_name = atom_name.replace('*', "'")
-    
+
     if atom_name.startswith('H'): 
         return -1
         

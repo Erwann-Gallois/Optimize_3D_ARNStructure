@@ -10,7 +10,7 @@ class RNA_RASP_Rigid_parallel:
         
         # Désactiver le parallélisme interne de PyTorch pour laisser le multiprocessing gérer les cœurs
         torch.set_num_threads(1)
-        
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.pdb_path = pdb_path
         self.lr = lr
         self.output_path = output_path
