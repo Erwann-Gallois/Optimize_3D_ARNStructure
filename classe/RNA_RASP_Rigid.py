@@ -162,10 +162,11 @@ class RNA_RASP_Rigid:
         energy1 = self.potential_tensor[self.k_vals, self.t1_vals, self.t2_vals, d1]
         
         interp_energy = (1 - alpha) * energy0 + alpha * energy1
-        
+        plateau_val = 2.7
+        corrected_energy = interp_energy - plateau_val
         # On annule l'énergie des atomes trop éloignés
         valid_mask = (dists < float(max_dist_idx)).float()
-        rasp_score = torch.sum(interp_energy * valid_mask)
+        rasp_score = torch.sum(corrected_energy * valid_mask)
 
         # Contrainte Backbone
         if len(self.bb_i_idx) > 0:
@@ -200,9 +201,12 @@ class RNA_RASP_Rigid:
             for step in range(self.epochs_per_cycle):
                 optimizer.zero_grad()
                 
+                self.rasp_score = 0.0
+                self.bb_penalty = 0.0
+
                 coords = self.get_current_full_coords()
-                rasp_score, bb_penalty = self.calculate_detailed_scores(coords)
-                loss = rasp_score + bb_penalty
+                self.rasp_score, self.bb_penalty = self.calculate_detailed_scores(coords)
+                loss = self.rasp_score + self.bb_penalty
                 
                 loss.backward()
                 optimizer.step()
@@ -215,7 +219,7 @@ class RNA_RASP_Rigid:
                     
                 # Affichage
                 if step % 100 == 0 or step == self.epochs_per_cycle - 1:
-                    print(f"Epoch {step:3d} | Total: {loss.item():.2f} | RASP: {rasp_score.item():.2f} | Backbone: {bb_penalty.item():.2f}")
+                    print(f"Epoch {step:3d} | Total: {loss.item():.2f} | RASP: {self.rasp_score.item():.2f} | Backbone: {self.bb_penalty.item():.2f}")
             
             # --- INJECTION D'ALÉATOIRE (SHAKE) ---
             if cycle < self.num_cycles - 1:
@@ -253,5 +257,5 @@ class RNA_RASP_Rigid:
         out_ppdb.df['ATOM'][['x_coord', 'y_coord', 'z_coord']] = final_full_coords
         out_ppdb.df["ATOM"]["chain_id"] = "A"
         out_ppdb.to_pdb(path=self.output_path)
-        print(f"Optimisation Rigide terminée. Meilleur score: {self.best_score:.4f}")
+        print(f"Optimisation Rigide terminée. Meilleur score: {self.best_score:.4f}, RASP : {self.rasp_score:.4f}, Backbone : {self.bb_penalty:.4f}")
         print(f"Fichier sauvegardé : {self.output_path}")
