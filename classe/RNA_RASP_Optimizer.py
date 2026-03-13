@@ -3,10 +3,9 @@ import torch
 import numpy as np
 import pandas as pd
 from biopandas.pdb import PandasPdb
-# import depuis votre script
 from parse_rasp_potentials import load_rasp_potentials, get_rasp_type
 
-class RNA_RASP_Rigid:
+class RNA_RASP_Optimizer:
     def __init__(self, pdb_path, lr=0.2, type_RASP="all", output_path="output_rigid.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5, backbone_weight=100.0):
         if not os.path.exists(pdb_path):
             raise FileNotFoundError(f"Le fichier PDB {pdb_path} n'existe pas.")

@@ -6,6 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt 
 from biopandas.pdb import PandasPdb
 import nglview as nv
+from Bio import SeqIO
 
 def view_structure(file_pdb):
     # 1. Charger le fichier généré
@@ -100,11 +101,11 @@ def generer_arn_droit(sequence, fichier_sortie="arn_structure.pdb"):
 def read_fasta_file (fasta_file):
     if not os.path.exists(fasta_file):
         raise FileNotFoundError(f"Le fichier {fasta_file} n'existe pas.")
-    if not os.path.endswith(".fasta"):
-        raise ValueError(f"Le fichier {fasta_file} n'est pas un fichier fasta.")
     sequences = []
+    nom = []
     records = list(SeqIO.parse(fasta_file, "fasta"))
     for record in records:
         sequences.append(record.seq)
-    return sequences
+        nom.append(record.id)
+    return sequences, nom
         

@@ -24,8 +24,6 @@ def get_dfire_type(atom_name, res_name):
     if atom_name.startswith('H'): 
         return -1
     dfire_type = res_name + "_" + atom_name
-    if atom_name.startswith('H'): 
-        return -1
     return dfire_type
 
 def calculate_dfire_score(pdb_path, potentials):

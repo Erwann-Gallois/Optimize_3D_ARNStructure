@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from biopandas.pdb import PandasPdb
+import torch
 
 # Mapping exact d'après la table RASP (Types 1 à 23 -> Index 0 à 22 pour le code)
 # Type 1: OP1, OP2, OP3
@@ -196,3 +197,66 @@ def calculer_score_rasp(pdb_path, potentials_dict):
         print(missing_atoms)
             
     return total_energy, pairs_scored
+
+def calculer_score_rasp_smooth(pdb_path, potential_tensor, device="cpu"):
+    """
+    Calcule le score RASP d'un PDB avec interpolation cubique pour éviter 
+    les écarts avec l'optimiseur.
+    """
+    # 1. Chargement et Mapping (Identique à ton code actuel)
+    ppdb = PandasPdb().read_pdb(pdb_path)
+    df = ppdb.df['ATOM']
+    df = df[~df['atom_name'].str.startswith('H')].reset_index(drop=True)
+    
+    coords = torch.tensor(df[['x_coord', 'y_coord', 'z_coord']].values, dtype=torch.float32).to(device)
+    res_ids = torch.tensor(df['residue_number'].values, dtype=torch.long).to(device)
+    
+    # Récupération des types RASP (assure-toi que get_rasp_type est importé)
+    atom_types = torch.tensor([get_rasp_type(r, a) for r, a in zip(df['residue_name'], df['atom_name'])], dtype=torch.long).to(device)
+    
+    # 2. Préparation des paires (Triangular upper)
+    n_atoms = len(df)
+    i_idx, j_idx = torch.triu_indices(n_atoms, n_atoms, offset=1, device=device)
+    
+    # Calcul de la séparation séquentielle k 
+    sep = torch.abs(res_ids[i_idx] - res_ids[j_idx])
+    mask_k = sep > 0 # On ignore k=0 selon l'article
+    
+    pair_i = i_idx[mask_k]
+    pair_j = j_idx[mask_k]
+    k_vals = torch.clamp(sep[mask_k] - 1, 0, 5) # k de 0 à 5 dans la matrice
+    
+    # 3. Calcul des distances et Spline Cubique
+    dists = torch.norm(coords[pair_i] - coords[pair_j], dim=1) + 1e-8
+    
+    # Seuil de l'article : Les interactions au-delà de 20A sont considérées nulles 
+    # Pour coller à ton script de validation : 19.0A
+    mask_cutoff = (dists < 19.0).float()
+    
+    max_idx = potential_tensor.size(3) - 1
+    d_clamp = torch.clamp(dists, 0.0, float(max_idx))
+    d0 = torch.floor(d_clamp).long()
+    d1 = torch.clamp(d0 + 1, max=max_idx)
+    alpha = d_clamp - d0.float()
+    
+    im1 = torch.clamp(d0 - 1, min=0)
+    i2  = torch.clamp(d1 + 1, max=max_idx)
+    
+    # Extraction des énergies
+    t1, t2 = atom_types[pair_i], atom_types[pair_j]
+    p0 = potential_tensor[k_vals, t1, t2, im1]
+    p1 = potential_tensor[k_vals, t1, t2, d0]
+    p2 = potential_tensor[k_vals, t1, t2, d1]
+    p3 = potential_tensor[k_vals, t1, t2, i2]
+    
+    # Formule Catmull-Rom (Spline)
+    interp_energy = 0.5 * (
+        (2 * p1) +
+        (-p0 + p2) * alpha +
+        (2 * p0 - 5 * p1 + 4 * p2 - p3) * alpha**2 +
+        (-p0 + 3 * p1 - 3 * p2 + p3) * alpha**3
+    )
+    
+    # Score final : Somme pondérée par le masque de distance
+    total_score = torch.sum(interp_energy * mask_cutoff)
+    return total_score.item()

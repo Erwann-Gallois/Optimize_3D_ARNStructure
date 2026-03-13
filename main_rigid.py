@@ -1,28 +1,41 @@
 import torch
-from fonction import generer_arn_droit
-from classe.RNA_RASP_Rigid import RNA_RASP_Rigid
+from fonction import generer_arn_droit, read_fasta_file
+from classe.RNA_RASP_Optimizer import RNA_RASP_Optimizer
+from classe.RNA_DFIRE_Rigid import RNA_DFIRE_Rigid
+import time
+import os
 
+execution_time = {}
+seqs, nom = read_fasta_file("example.fasta")
 # 1. Génération de la structure initiale (ARN droit)
-sequence_arn = "CCUGGUAUUGCAGUACCUCCAGGU"
-pdb_initial = "fichier_arn/mon_arn_rigid_droit.pdb"
-generer_arn_droit(sequence_arn, pdb_initial)
 
-# # 2. Optimisation par corps rigide (Nucleotide par Nucleotide)
-# # On utilise la nouvelle classe RNA_RASP_Rigid
-# # ref_atom="C3'" par défaut
-opt = RNA_RASP_Rigid(
-    pdb_initial, 
-    epochs_per_cycle=150,
-    lr=0.1,
-    type_RASP="all",
-    output_path="resultat/mon_arn_rigide_optimise_1.pdb",
-    ref_atom="C3'",
-    num_cycles=50,
-    noise_coords=5.0,
-    noise_angles=5.0,
-    backbone_weight=100.0
-)
 
-print("\n--- Démarrage de l'optimisation rigide ---")
-opt.run_optimization()
-print("--- Fin de l'optimisation ---")
+for seq, name in zip(seqs, nom):
+    start_time = time.perf_counter()
+    taille = len(seq)
+    pdb_initial = "fichier_arn/arn_" + str(taille) + ".pdb"
+    generer_arn_droit(seq, pdb_initial)
+    opt = RNA_RASP_Optimizer(
+        pdb_initial, 
+        epochs_per_cycle=100,
+        lr=0.1,
+        output_path="resultat/mon_arn_optimise_rasp_" + str(taille) + ".pdb",
+        ref_atom="C3'",
+        num_cycles=50,
+        noise_coords=10.0,
+        noise_angles=15.0,
+        backbone_weight=100.0
+    )
+
+    print("\n--- Démarrage de l'optimisation ---")
+    opt.run_optimization()
+    print("--- Fin de l'optimisation ---")
+    print("Affichage du score : ", opt.best_score)
+    end_time = time.perf_counter()
+    name = name + "-" + str(taille)
+    execution_time[name] = end_time - start_time
+    print(f"Optimisation terminée en {execution_time[name]:.4f} secondes.")
+
+with open("execution_time_rasp.txt", "w") as f:
+    for name, time in execution_time.items():
+        f.write(f"{name}: {time:.4f}\n")
