@@ -7,7 +7,7 @@ from biopandas.pdb import PandasPdb
 from parse_rasp_potentials import load_rasp_potentials, get_rasp_type
 
 class RNA_RASP_Rigid:
-    def __init__(self, pdb_path, lr=0.2, type_RASP="all", output_path="output_rigid.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5):
+    def __init__(self, pdb_path, lr=0.2, type_RASP="all", output_path="output_rigid.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5, backbone_weight=100.0):
         if not os.path.exists(pdb_path):
             raise FileNotFoundError(f"Le fichier PDB {pdb_path} n'existe pas.")
         
@@ -23,7 +23,7 @@ class RNA_RASP_Rigid:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Utilisation du device : {self.device}")
         self.best_score = float('inf')
-        
+        self.backbone_weight = backbone_weight
         # 1. Chargement des potentiels
         self.load_dict_potentials()
         
@@ -95,7 +95,6 @@ class RNA_RASP_Rigid:
         self.bb_i_idx = torch.tensor(self.bb_i_idx, dtype=torch.long).to(self.device)
         self.bb_j_idx = torch.tensor(self.bb_j_idx, dtype=torch.long).to(self.device)
         self.target_bb_dist = 1.61 
-        self.backbone_weight = 100.0 
         
         # Données pour RASP
         atom_types = torch.tensor(self.df_filtered['rasp_type'].values, dtype=torch.long).to(self.device)

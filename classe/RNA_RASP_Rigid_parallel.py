@@ -6,11 +6,11 @@ from biopandas.pdb import PandasPdb
 class RNA_RASP_Rigid_parallel:
     def __init__(self, pdb_path, potential_tensor, lr=0.2, output_path=None, 
                  ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, 
-                 noise_coords=1.5, noise_angles=0.5, verbose=False):
+                 noise_coords=1.5, noise_angles=0.5, verbose=False, backbone_weight=500.0):
         
         # Désactiver le parallélisme interne de PyTorch pour laisser le multiprocessing gérer les cœurs
         torch.set_num_threads(1)
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cpu")
         self.pdb_path = pdb_path
         self.lr = lr
         self.output_path = output_path
@@ -20,7 +20,7 @@ class RNA_RASP_Rigid_parallel:
         self.noise_coords = noise_coords
         self.noise_angles = noise_angles
         self.verbose = verbose
-        
+        self.backbone_weight = backbone_weight
         self.best_score = float('inf')
         
         # On utilise le tenseur passé en argument (mémoire partagée)
@@ -28,6 +28,13 @@ class RNA_RASP_Rigid_parallel:
         
         # Chargement et préparation
         self.convert_pdb_to_rigid_tensors(self.pdb_path)
+
+    def get_compactness(self):
+        with torch.no_grad():
+            coords = self.get_current_full_coords()
+            centroid = torch.mean(coords, dim=0)
+            rg = torch.sqrt(torch.mean(torch.sum((coords - centroid)**2, dim=1)))
+            return rg.item()
 
     def convert_pdb_to_rigid_tensors(self, pdb_path):
         """
@@ -88,7 +95,6 @@ class RNA_RASP_Rigid_parallel:
         self.bb_i_idx = torch.tensor(bb_i, dtype=torch.long)
         self.bb_j_idx = torch.tensor(bb_j, dtype=torch.long)
         self.target_bb_dist = 1.61 
-        self.backbone_weight = 500.0 
         
         # 5. Préparation des paires RASP avec SÉCURITÉ sur les indices
         atom_types = torch.tensor(self.df_filtered['rasp_type'].values, dtype=torch.long)

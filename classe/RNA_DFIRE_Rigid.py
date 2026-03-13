@@ -7,7 +7,7 @@ from biopandas.pdb import PandasPdb
 from parse_dfire_potentials import load_dfire_potentials, get_dfire_type
 
 class RNA_DFIRE_Rigid:
-    def __init__(self, pdb_path, lr=0.2, output_path="output_rigid.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5):
+    def __init__(self, pdb_path, lr=0.2, output_path="output_rigid.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5, backbone_weight=100.0):
         if not os.path.exists(pdb_path):
             raise FileNotFoundError(f"Le fichier PDB {pdb_path} n'existe pas.")
         

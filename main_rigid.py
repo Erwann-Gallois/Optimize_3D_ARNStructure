@@ -18,8 +18,9 @@ opt = RNA_RASP_Rigid(
     output_path="resultat/mon_arn_rigide_optimise_1.pdb",
     ref_atom="C3'",
     num_cycles=50,
-    noise_coords=10.0,
-    noise_angles=1.0
+    noise_coords=5.0,
+    noise_angles=5.0,
+    backbone_weight=100.0
 )
 
 print("\n--- Démarrage de l'optimisation rigide ---")
