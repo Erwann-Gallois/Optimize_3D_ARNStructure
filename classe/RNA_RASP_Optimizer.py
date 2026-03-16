@@ -6,7 +6,27 @@ from biopandas.pdb import PandasPdb
 from parse_rasp_potentials import load_rasp_potentials, get_rasp_type
 
 class RNA_RASP_Optimizer:
+    """
+    Optimiseur de structure ARN basé sur le potentiel RASP (Residue-specific All-atom Statistical Potential).
+    Cette classe permet de raffiner la structure 3D d'un ARN en traitant chaque nucléotide comme un corps rigide
+    et en minimisant l'énergie RASP ainsi que les contraintes de squelette (backbone).
+    """
     def __init__(self, pdb_path, lr=0.2, type_RASP="all", output_path="output_rigid.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5, backbone_weight=100.0):
+        """
+        Initialise l'optimiseur RNA_RASP_Optimizer.
+
+        Args:
+            pdb_path (str): Chemin vers le fichier PDB de la structure ARN.
+            lr (float): Taux d'apprentissage pour l'optimiseur Adam. (Défaut : 0.2)
+            type_RASP (str): Type de potentiel RASP à utiliser (ex: "all", "heavy"). (Défaut : "all")
+            output_path (str): Chemin pour sauvegarder la structure optimisée. (Défaut : "output_rigid.pdb")
+            ref_atom (str): Atome centre de chaque nucléotide pour les rotations/translations. (Défaut : "C3'")
+            num_cycles (int): Nombre de cycles globaux avec secousse (shake). (Défaut : 5)
+            epochs_per_cycle (int): Nombre d'époques d'optimisation par cycle. (Défaut : 100)
+            noise_coords (float): Amplitude du bruit de translation (en Å) lors du secouage. (Défaut : 1.5)
+            noise_angles (float): Amplitude du bruit de rotation (en radians) lors du secouage. (Défaut : 0.5)
+            backbone_weight (float): Poids pour la contrainte de continuité du squelette ARN. (Défaut : 100.0)
+        """
         if not os.path.exists(pdb_path):
             raise FileNotFoundError(f"Le fichier PDB {pdb_path} n'existe pas.")
         
@@ -30,6 +50,9 @@ class RNA_RASP_Optimizer:
         self.convert_pdb_to_rigid_tensors(self.pdb_path)
 
     def load_dict_potentials(self):
+        """
+        Charge la matrice de potentiels RASP depuis le fichier correspondant dans 'potentials/'.
+        """
         path = f"potentials/{self.type_RASP}.nrg"
         if os.path.exists(path):
             taille_mat, dict_pots = load_rasp_potentials(path)
@@ -38,6 +61,14 @@ class RNA_RASP_Optimizer:
             print(f"Fichier de potentiel non trouvé : {path}")
 
     def convert_dict_to_tensor(self, dict_pots, taille_mat):
+        """
+        Transforme le dictionnaire de potentiels RASP en un tenseur 4D PyTorch.
+        Indexation : [séparation_séquentielle, type_atome1, type_atome2, distance_bin].
+
+        Args:
+            dict_pots (dict): Dictionnaire de potentiels.
+            taille_mat (tuple): Dimensions cibles du tenseur.
+        """
         self.potential_tensor = torch.zeros(taille_mat, dtype=torch.float32).to(self.device)
         for (k, t1, t2, dist), energy in dict_pots.items():
             if k < taille_mat[0] and t1 < taille_mat[1] and t2 < taille_mat[2] and dist < taille_mat[3]:
@@ -45,6 +76,13 @@ class RNA_RASP_Optimizer:
                 self.potential_tensor[k, t2, t1, dist] = energy
 
     def convert_pdb_to_rigid_tensors(self, pdb_path):
+        """
+        Analyse le PDB, filtre les atomes selon les types RASP, et prépare
+        les paramètres optimisables (translation et rotation) pour chaque nucléotide.
+
+        Args:
+            pdb_path (str): Chemin vers le fichier PDB.
+        """
         ppdb = PandasPdb().read_pdb(pdb_path)
         df_atoms = ppdb.df['ATOM'].copy()
         
@@ -104,14 +142,19 @@ class RNA_RASP_Optimizer:
         sep = torch.abs(res_tensor[i_idx] - res_tensor[j_idx])
         mask_k = sep > 0 
         
-        self.pair_i = i_idx[mask_k]
-        self.pair_j = j_idx[mask_k]
+        self.pair_i = i_idx[mask_k].to(torch.int32)
+        self.pair_j = j_idx[mask_k].to(torch.int32)
         self.k_vals = torch.clamp(sep[mask_k] - 1, 0, 5)
         self.t1_vals = atom_types[self.pair_i]
         self.t2_vals = atom_types[self.pair_j]
 
     def get_rotation_matrices(self):
-        """Convertit les 3 angles d'Euler en une matrice de rotation 3x3 pour chaque nucléotide."""
+        """
+        Calcule les matrices de rotation 3x3 pour chaque nucléotide à partir des angles Euler.
+
+        Returns:
+            torch.Tensor: Tenseur de matrices de rotation (N, 3, 3).
+        """
         cos_a, sin_a = torch.cos(self.rot_angles[:, 0]), torch.sin(self.rot_angles[:, 0])
         cos_b, sin_b = torch.cos(self.rot_angles[:, 1]), torch.sin(self.rot_angles[:, 1])
         cos_g, sin_g = torch.cos(self.rot_angles[:, 2]), torch.sin(self.rot_angles[:, 2])
@@ -131,6 +174,12 @@ class RNA_RASP_Optimizer:
         return torch.bmm(Rz, torch.bmm(Ry, Rx))
 
     def get_current_full_coords(self):
+        """
+        Applique les transformations (rotation + translation) aux atomes pour obtenir les coordonnées 3D actuelles.
+
+        Returns:
+            torch.Tensor: Coordonnées cartésiennes de tous les atomes (N_atomes, 3).
+        """
         # 1. On récupère les matrices de rotation pour chaque nucléotide
         R = self.get_rotation_matrices() 
         
@@ -144,6 +193,15 @@ class RNA_RASP_Optimizer:
         return self.ref_coords[self.atom_to_nuc_idx] + rotated_offsets
 
     def calculate_detailed_scores(self, current_full_coords):
+        """
+        Calcule l'énergie RASP totale et la pénalité de distance du squelette (backbone).
+
+        Args:
+            current_full_coords (torch.Tensor): Coordonnées 3D actuelles.
+
+        Returns:
+            tuple: (rasp_score, bb_penalty) - Énergies scalaires PyTorch.
+        """
         p1 = current_full_coords[self.pair_i]
         p2 = current_full_coords[self.pair_j]
         
@@ -179,12 +237,10 @@ class RNA_RASP_Optimizer:
 
     def run_optimization(self):
         """
-        num_cycles : Nombre de fois où on relance l'optimisation après avoir secoué la structure
-        epochs_per_cycle : Nombre d'étapes de descente de gradient par cycle
-        noise_coords : Amplitude maximale du saut aléatoire en Angströms (translation)
-        noise_angles : Amplitude maximale du saut aléatoire en Radians (rotation)
+        Exécute la boucle principale d'optimisation RASP.
+        Utilise Adam pour minimiser loss = RASP + Backbone.
+        Inclut une phase de secouage (cooling/decay) entre les cycles pour explorer l'espace.
         """
-        # Initialisation de l'optimiseur
         optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
         
         best_ref_coords = self.ref_coords.clone().detach()
@@ -249,6 +305,9 @@ class RNA_RASP_Optimizer:
         self.save_optimized_pdb()
 
     def save_optimized_pdb(self):
+        """
+        Saisie les coordonnées finales optimisées et écrit le résultat dans un fichier PDB.
+        """
         final_full_coords = self.get_current_full_coords().detach().cpu().numpy()
         out_ppdb = PandasPdb()
         out_ppdb.df['ATOM'] = self.df_filtered.copy()

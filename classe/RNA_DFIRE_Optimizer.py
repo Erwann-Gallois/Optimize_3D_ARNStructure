@@ -5,8 +5,27 @@ import pandas as pd
 from biopandas.pdb import PandasPdb
 from parse_dfire_potentials import load_dfire_potentials, get_dfire_type
 
-class RNA_DFIRE_Rigid:
+class RNA_DFIRE_Optimizer:
+    """
+    Optimiseur de structure ARN basé sur le potentiel DFIRE (Distance-scaled, Finite Ideal-gas Reference state).
+    Cette classe permet de raffiner la structure 3D d'un ARN en traitant chaque nucléotide comme un corps rigide
+    et en minimisant l'énergie DFIRE ainsi que les contraintes de squelette (backbone).
+    """
     def __init__(self, pdb_path, lr=0.2, output_path="output_rigid.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5, backbone_weight=100.0):
+        """
+        Initialise l'optimiseur RNA_DFIRE_Optimizer.
+
+        Args:
+            pdb_path (str): Chemin vers le fichier PDB de la structure ARN.
+            lr (float): Taux d'apprentissage pour l'optimiseur Adam. (Défaut : 0.2)
+            output_path (str): Chemin pour sauvegarder la structure optimisée. (Défaut : "output_rigid.pdb")
+            ref_atom (str): Atome centre de chaque nucléotide pour les rotations/translations. (Défaut : "C3'")
+            num_cycles (int): Nombre de cycles globaux avec secousse (shake). (Défaut : 5)
+            epochs_per_cycle (int): Nombre d'époques d'optimisation par cycle. (Défaut : 100)
+            noise_coords (float): Amplitude du bruit de translation (en Å) lors du secouage. (Défaut : 1.5)
+            noise_angles (float): Amplitude du bruit de rotation (en radians) lors du secouage. (Défaut : 0.5)
+            backbone_weight (float): Poids pour la contrainte de continuité du squelette ARN. (Défaut : 100.0)
+        """
         if not os.path.exists(pdb_path):
             raise FileNotFoundError(f"Le fichier PDB {pdb_path} n'existe pas.")
         
@@ -30,6 +49,9 @@ class RNA_DFIRE_Rigid:
         self.convert_pdb_to_rigid_tensors(self.pdb_path)
 
     def load_dict_potentials(self):
+        """
+        Charge la matrice de potentiels DFIRE depuis le fichier statique 'potentials/matrice_dfire.dat'.
+        """
         path = "potentials/matrice_dfire.dat"
         if os.path.exists(path):
             dict_pots = load_dfire_potentials(path)
@@ -38,6 +60,12 @@ class RNA_DFIRE_Rigid:
             print(f"Fichier de potentiel non trouvé : {path}")
 
     def convert_dict_to_tensor(self, dict_pots):
+        """
+        Transforme le dictionnaire de potentiels en un tenseur 3D PyTorch indexé par types d'atomes.
+
+        Args:
+            dict_pots (dict): Dictionnaire mapping (type1, type2) -> tableau de potentiels.
+        """
         # Récupérer tous les types d'atomes uniques
         all_types = set()
         for t1, t2 in dict_pots.keys():
@@ -60,6 +88,13 @@ class RNA_DFIRE_Rigid:
                 self.potential_tensor[idx2, idx1, :] = torch.tensor(values, dtype=torch.float32)
 
     def convert_pdb_to_rigid_tensors(self, pdb_path):
+        """
+        Analyse le PDB, extrait les coordonnées et définit les nucléotides comme corps rigides.
+        Initialise les paramètres de translation (ref_coords) et de rotation (rot_angles).
+
+        Args:
+            pdb_path (str): Chemin vers le fichier PDB.
+        """
         ppdb = PandasPdb().read_pdb(pdb_path)
         df_atoms = ppdb.df['ATOM'].copy()
         
@@ -130,6 +165,12 @@ class RNA_DFIRE_Rigid:
         self.t2_vals = atom_types[self.pair_j]
 
     def get_rotation_matrices(self):
+        """
+        Calcule les matrices de rotation 3x3 pour chaque nucléotide à partir des angles Euler.
+
+        Returns:
+            torch.Tensor: Tenseur de matrices de rotation (N, 3, 3).
+        """
         cos_a, sin_a = torch.cos(self.rot_angles[:, 0]), torch.sin(self.rot_angles[:, 0])
         cos_b, sin_b = torch.cos(self.rot_angles[:, 1]), torch.sin(self.rot_angles[:, 1])
         cos_g, sin_g = torch.cos(self.rot_angles[:, 2]), torch.sin(self.rot_angles[:, 2])
@@ -147,12 +188,27 @@ class RNA_DFIRE_Rigid:
         return torch.bmm(Rz, torch.bmm(Ry, Rx))
 
     def get_current_full_coords(self):
+        """
+        Applique les transformations (rotation + translation) aux atomes pour obtenir les coordonnées 3D actuelles.
+
+        Returns:
+            torch.Tensor: Coordonnées cartésiennes de tous les atomes (N_atomes, 3).
+        """
         R = self.get_rotation_matrices() 
         R_atoms = R[self.atom_to_nuc_idx]
         rotated_offsets = torch.bmm(R_atoms, self.offsets.unsqueeze(2)).squeeze(2)
         return self.ref_coords[self.atom_to_nuc_idx] + rotated_offsets
 
     def calculate_detailed_scores(self, current_full_coords):
+        """
+        Calcule l'énergie DFIRE totale par paire d'atomes et la pénalité de distance du squelette (backbone).
+
+        Args:
+            current_full_coords (torch.Tensor): Coordonnées 3D actuelles.
+
+        Returns:
+            tuple: (dfire_score, bb_penalty) - Énergies scalaires PyTorch.
+        """
         n_pairs = self.pair_i.size(0)
         chunk_size = 5000000 # On traite par blocs de 5 millions de paires pour éviter l'OOM CUDA
         
@@ -202,6 +258,11 @@ class RNA_DFIRE_Rigid:
         return dfire_score, bb_penalty
 
     def run_optimization(self):
+        """
+        Exécute la boucle principale d'optimisation.
+        Utilise Adam pour minimiser loss = DFIRE + Backbone.
+        Inclut une phase de secouage (cooling/decay) entre les cycles pour éviter les minima locaux.
+        """
         optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
         
         best_ref_coords = self.ref_coords.clone().detach()
@@ -258,6 +319,9 @@ class RNA_DFIRE_Rigid:
         self.save_optimized_pdb()
 
     def save_optimized_pdb(self):
+        """
+        Saisie les coordonnées finales optimisées et les écrit dans un nouveau fichier PDB.
+        """
         final_full_coords = self.get_current_full_coords().detach().cpu().numpy()
         out_ppdb = PandasPdb()
         out_ppdb.df['ATOM'] = self.df_filtered.copy()

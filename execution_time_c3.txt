@@ -1,0 +1,5 @@
+pdb1a9n.ent_R-24: 14.7907
+pdb1kuq.ent_B-57: 14.5151
+pdb1kxk.ent_A-70: 14.9875
+pdb1mfq.ent_A-127: 14.3904
+pdb1u9s.ent_A-155: 14.5002
