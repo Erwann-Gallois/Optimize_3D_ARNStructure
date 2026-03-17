@@ -40,6 +40,12 @@ class RNA_RASP_Optimizer:
         self.noise_angles = noise_angles
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Utilisation du device : {self.device}")
+        # Rayons simplifiés (ajustables)
+        self.VDW_RADII = {
+            'P': 1.8, 'O': 1.5, 'C': 1.7, 'N': 1.55, 'H': 1.2
+        }
+        # Valeur par défaut si l'atome est inconnu
+        self.DEFAULT_VDW = 1.6
         self.best_score = float('inf')
         self.backbone_weight = backbone_weight
         # 1. Chargement des potentiels
@@ -90,6 +96,9 @@ class RNA_RASP_Optimizer:
         
         raw_coords = torch.tensor(self.df_filtered[['x_coord', 'y_coord', 'z_coord']].values, dtype=torch.float32).to(self.device)
         res_ids = self.df_filtered['residue_number'].values
+        atom_names = self.df_filtered['atom_name'].values
+        elements = [name[0] for name in atom_names]
+        radii_vals = [self.VDW_RADII.get(e, self.DEFAULT_VDW) for e in elements]
         unique_res = np.unique(res_ids)
         
         res_to_idx = {res: i for i, res in enumerate(unique_res)}
@@ -135,13 +144,15 @@ class RNA_RASP_Optimizer:
         
         res_tensor = torch.tensor(res_ids, dtype=torch.long).to(self.device)
         sep = torch.abs(res_tensor[i_idx] - res_tensor[j_idx])
-        mask_k = sep > 0 
+        mask_k = sep > 3
         
         self.pair_i = i_idx[mask_k].to(torch.int32)
         self.pair_j = j_idx[mask_k].to(torch.int32)
         self.k_vals = torch.clamp(sep[mask_k] - 1, 0, 5)
         self.t1_vals = atom_types[self.pair_i]
         self.t2_vals = atom_types[self.pair_j]
+        self.vdw_radii_all = torch.tensor(radii_vals, dtype=torch.float32).to(self.device)
+        self.min_dist_vdw = (self.vdw_radii_all[self.pair_i] + self.vdw_radii_all[self.pair_j]) * 0.85
 
     def get_rotation_matrices(self):
         """
@@ -219,16 +230,27 @@ class RNA_RASP_Optimizer:
         valid_mask = (dists < float(max_dist_idx)).float()
         rasp_score = torch.sum(corrected_energy * valid_mask)
 
+        # --- [Calcul Anti-Clash] ---
+        # On ne pénalise que si dist < min_dist_vdw
+        clash_mask = dists < self.min_dist_vdw
+        clash_penalty = torch.tensor(0.0, device=self.device)
+        
+        if clash_mask.any():
+            # Formule : force = K * (distance_minimale - distance_réelle)^2
+            # K doit être élevé pour agir comme un mur infranchissable
+            diff = self.min_dist_vdw[clash_mask] - dists[clash_mask]
+            clash_penalty = 1000.0 * torch.sum(diff**2)
+
         # Contrainte Backbone
-        if len(self.bb_i_idx) > 0:
-            p_o3 = current_full_coords[self.bb_i_idx]
-            p_p = current_full_coords[self.bb_j_idx]
+        if len(self.bb_o3_idx) > 0:
+            p_o3 = current_full_coords[self.bb_o3_idx]
+            p_p = current_full_coords[self.bb_p_idx]
             bb_dists = torch.norm(p_o3 - p_p, dim=1)
             bb_penalty = self.backbone_weight * torch.sum((bb_dists - self.target_bb_dist)**2)
         else:
             bb_penalty = torch.tensor(0.0, device=self.device)
             
-        return rasp_score, bb_penalty
+        return rasp_score, bb_penalty, clash_penalty
 
     def run_optimization(self):
         """
@@ -254,8 +276,8 @@ class RNA_RASP_Optimizer:
                 self.bb_penalty = 0.0
 
                 coords = self.get_current_full_coords()
-                self.rasp_score, self.bb_penalty = self.calculate_detailed_scores(coords)
-                loss = self.rasp_score + self.bb_penalty
+                rasp_score, bb_penalty, clash_penalty = self.calculate_detailed_scores(coords)
+                loss = rasp_score + bb_penalty + clash_penalty
                 
                 loss.backward()
                 optimizer.step()
@@ -268,7 +290,7 @@ class RNA_RASP_Optimizer:
                     
                 # Affichage
                 if step % 100 == 0 or step == self.epochs_per_cycle - 1:
-                    print(f"Epoch {step:3d} | Total: {loss.item():.2f} | RASP: {self.rasp_score.item():.2f} | Backbone: {self.bb_penalty.item():.2f}")
+                    print(f"Epoch {step:3d} | Total: {loss.item():.2f} | RASP: {rasp_score.item():.2f} | Backbone: {bb_penalty.item():.2f} | Clash: {clash_penalty.item():.2f}")
             
             # --- INJECTION D'ALÉATOIRE (SHAKE) ---
             if cycle < self.num_cycles - 1:
@@ -309,5 +331,5 @@ class RNA_RASP_Optimizer:
         out_ppdb.df['ATOM'][['x_coord', 'y_coord', 'z_coord']] = final_full_coords
         out_ppdb.df["ATOM"]["chain_id"] = "A"
         out_ppdb.to_pdb(path=self.output_path)
-        print(f"Optimisation Rigide terminée. Meilleur score: {self.best_score:.4f}, RASP : {self.rasp_score:.4f}, Backbone : {self.bb_penalty:.4f}")
+        print(f"Meilleur score : {self.best_score:.2f}")
         print(f"Fichier sauvegardé : {self.output_path}")
