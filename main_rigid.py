@@ -1,7 +1,7 @@
 import torch
 from fonction import generer_arn_droit, read_fasta_file
 from classe.RNA_RASP_Optimizer import RNA_RASP_Optimizer
-from classe.RNA_DFIRE_Rigid import RNA_DFIRE_Rigid
+from classe.RNA_DFIRE_Optimizer import RNA_DFIRE_Optimizer
 import time
 import os
 
@@ -36,6 +36,6 @@ for seq, name in zip(seqs, nom):
     execution_time[name] = end_time - start_time
     print(f"Optimisation terminée en {execution_time[name]:.4f} secondes.")
 
-with open("execution_time_rasp.txt", "w") as f:
+with open("execution_time_rasp_cpu.txt", "w") as f:
     for name, time in execution_time.items():
         f.write(f"{name}: {time:.4f}\n")

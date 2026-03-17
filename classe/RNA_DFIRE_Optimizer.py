@@ -11,7 +11,7 @@ class RNA_DFIRE_Optimizer:
     Cette classe permet de raffiner la structure 3D d'un ARN en traitant chaque nucléotide comme un corps rigide
     et en minimisant l'énergie DFIRE ainsi que les contraintes de squelette (backbone).
     """
-    def __init__(self, pdb_path, lr=0.2, output_path="output_rigid.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5, backbone_weight=100.0):
+    def __init__(self, pdb_path, lr=0.2, output_path="output_rigid.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5, backbone_weight=100.0, verbose = True):
         """
         Initialise l'optimiseur RNA_DFIRE_Optimizer.
 
@@ -26,9 +26,14 @@ class RNA_DFIRE_Optimizer:
             noise_angles (float): Amplitude du bruit de rotation (en radians) lors du secouage. (Défaut : 0.5)
             backbone_weight (float): Poids pour la contrainte de continuité du squelette ARN. (Défaut : 100.0)
         """
+        self.t2_vals = None
+        self.t1_vals = None
+        self.pair_j = None
+        self.pair_i = None
+        self.potential_tensor = None
         if not os.path.exists(pdb_path):
             raise FileNotFoundError(f"Le fichier PDB {pdb_path} n'existe pas.")
-        
+        self.target_bb_dist = 1.61
         self.pdb_path = pdb_path
         self.lr = lr
         self.output_path = output_path
@@ -41,7 +46,8 @@ class RNA_DFIRE_Optimizer:
         print(f"Utilisation du device : {self.device}")
         self.best_score = float('inf')
         self.backbone_weight = backbone_weight
-        
+        self.verbose = verbose
+        self.bb_o3_idx, self.bb_p_idx = [], []
         # 1. Chargement des potentiels
         self.load_dict_potentials()
         
@@ -134,19 +140,17 @@ class RNA_DFIRE_Optimizer:
         self.offsets = raw_coords - ref_coords_init[self.atom_to_nuc_idx]
         
         # Identification Backbone (pour la contrainte de distance O3'-P)
-        self.bb_i_idx, self.bb_j_idx = [], []
         for i in range(len(unique_res) - 1):
             res_curr = unique_res[i]
             res_next = unique_res[i+1]
             idx_o3 = self.df_filtered[(self.df_filtered['residue_number'] == res_curr) & (self.df_filtered['atom_name'] == "O3'")].index
             idx_p = self.df_filtered[(self.df_filtered['residue_number'] == res_next) & (self.df_filtered['atom_name'] == "P")].index
             if not idx_o3.empty and not idx_p.empty:
-                self.bb_i_idx.append(idx_o3[0])
-                self.bb_j_idx.append(idx_p[0])
+                self.bb_o3_idx.append(idx_o3[0])
+                self.bb_p_idx.append(idx_p[0])
         
-        self.bb_i_idx = torch.tensor(self.bb_i_idx, dtype=torch.long).to(self.device)
-        self.bb_j_idx = torch.tensor(self.bb_j_idx, dtype=torch.long).to(self.device)
-        self.target_bb_dist = 1.61 
+        self.bb_o3_idx = torch.tensor(self.bb_o3_idx, dtype=torch.long).to(self.device)
+        self.bb_p_idx = torch.tensor(self.bb_p_idx, dtype=torch.long).to(self.device)
         
         # Préparation des paires pour le calcul du score DFIRE
         # Préparation des paires pour le calcul du score DFIRE
@@ -156,9 +160,9 @@ class RNA_DFIRE_Optimizer:
         
         res_tensor = torch.tensor(res_ids, dtype=torch.int32).to(self.device)
         sep = torch.abs(res_tensor[i_idx] - res_tensor[j_idx])
-        mask_inter = sep > 0
+        mask_inter = sep > 2
         
-        # On utilise int32 pour économiser de la mémoire GPU (supporte jusqu'à 2 milliards d'atomes)
+        # On utilise int32 pour économiser de la mémoire GPU (supporte jusqu'à deux milliards d'atomes).
         self.pair_i = i_idx[mask_inter].to(torch.int32)
         self.pair_j = j_idx[mask_inter].to(torch.int32)
         self.t1_vals = atom_types[self.pair_i]
@@ -247,9 +251,9 @@ class RNA_DFIRE_Optimizer:
             dfire_score = dfire_score + torch.sum(interp_energy * valid_mask)
 
         # Contrainte Backbone
-        if len(self.bb_i_idx) > 0:
-            p_o3 = current_full_coords[self.bb_i_idx]
-            p_p = current_full_coords[self.bb_j_idx]
+        if len(self.bb_o3_idx) > 0:
+            p_o3 = current_full_coords[self.bb_o3_idx]
+            p_p = current_full_coords[self.bb_p_idx]
             bb_dists = torch.norm(p_o3 - p_p, dim=1)
             bb_penalty = self.backbone_weight * torch.sum((bb_dists - self.target_bb_dist)**2)
         else:
@@ -269,11 +273,13 @@ class RNA_DFIRE_Optimizer:
         best_rot_angles = self.rot_angles.clone().detach()
         self.best_score = float('inf')
 
-        print(f"🚀 Début de l'optimisation DFIRE (Adam, {self.num_cycles} cycles de {self.epochs_per_cycle} epochs)...")
-        print(f"Nombre de paires d'atomes à traiter : {self.pair_i.size(0):,}")
+        if self.verbose:
+            print(f"🚀 Début de l'optimisation DFIRE (Adam, {self.num_cycles} cycles de {self.epochs_per_cycle} epochs)...")
+            print(f"Nombre de paires d'atomes à traiter : {self.pair_i.size(0):,}")
         
         for cycle in range(self.num_cycles):
-            print(f"\n--- Cycle {cycle+1}/{self.num_cycles} ---")
+            if self.verbose:
+                print(f"\n--- Cycle {cycle+1}/{self.num_cycles} ---")
             
             for step in range(self.epochs_per_cycle):
                 optimizer.zero_grad()
@@ -290,7 +296,7 @@ class RNA_DFIRE_Optimizer:
                     best_ref_coords.copy_(self.ref_coords)
                     best_rot_angles.copy_(self.rot_angles)
                     
-                if step % 20 == 0 or step == self.epochs_per_cycle - 1:
+                if self.verbose and (step % 100 == 0 or step == self.epochs_per_cycle - 1):
                     print(f"Epoch {step:3d} | Total: {loss.item():.2f} | DFIRE: {score.item():.2f} | Backbone: {penalty.item():.2f}")
                 
                 # Nettoyage explicite pour libérer de la mémoire si nécessaire
@@ -311,7 +317,8 @@ class RNA_DFIRE_Optimizer:
                 optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
                 torch.cuda.empty_cache()
 
-        print("\n Optimisation terminée.")
+        if self.verbose:
+            print("\n Optimisation terminée.")
         with torch.no_grad():
             self.ref_coords.copy_(best_ref_coords)
             self.rot_angles.copy_(best_rot_angles)

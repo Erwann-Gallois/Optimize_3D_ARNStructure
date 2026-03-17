@@ -3,20 +3,21 @@ import torch
 import numpy as np
 import pandas as pd
 from biopandas.pdb import PandasPdb
-from parse_dfire_potentials import load_dfire_potentials, get_dfire_type
+from parse_rasp_potentials import load_rasp_potentials, get_rasp_type
 
-class RNA_DFIRE_C3_Optimizer:
+class RNA_RASP_C3_Optimizer:
     """
-    Optimiseur spécialisé qui calcule l'énergie DFIRE uniquement sur les atomes C3'.
+    Optimiseur spécialisé qui calcule l'énergie RASP uniquement sur les atomes C3'.
     
     Le principe est de :
     1. Ne considérer que les distances C3'-C3' pour le calcul du score (gain de temps massif).
-    2. Maintenir les contraintes de squelette (backbone) via les atomes O3' et P.
-    3. Optimiser la position (translation) et l'orientation (rotation) de chaque nucléotide.
-    4. Régénérer les coordonnées de TOUS les atomes à la fin en appliquant les transformations trouvées.
+    2. Utiliser la matrice de potentiel RASP spécifique (c3.nrg).
+    3. Maintenir les contraintes de squelette (backbone) via les atomes O3' et P.
+    4. Optimiser la position (translation) et l'orientation (rotation) de chaque nucléotide.
+    5. Régénérer les coordonnées de TOUS les atomes à la fin en appliquant les transformations trouvées.
     """
     
-    def __init__(self, pdb_path, lr=0.2, output_path="output_c3.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5, backbone_weight=100.0):
+    def __init__(self, pdb_path, lr=0.2, output_path="output_rasp_c3.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5, backbone_weight=100.0):
         if not os.path.exists(pdb_path):
             raise FileNotFoundError(f"Le fichier PDB {pdb_path} n'existe pas.")
         
@@ -30,49 +31,47 @@ class RNA_DFIRE_C3_Optimizer:
         self.noise_angles = noise_angles
         self.backbone_weight = backbone_weight
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Utilisation du device : {self.device} (Optimiseur C3' uniquement)")
+        print(f"Utilisation du device : {self.device} (Optimiseur RASP C3' uniquement)")
         
         self.best_score = float('inf')
         
-        # 1. Chargement des potentiels DFIRE
+        # 1. Chargement des potentiels RASP C3
         self.load_potentials()
         
-        # 2. Préparation des données (Atomes C3' pour le score, O3'/P pour le backbone, et tous pour la régénération)
+        # 2. Préparation de la structure
         self.prepare_structure()
 
     def load_potentials(self):
-        """Charge la matrice DFIRE."""
-        path = "potentials/matrice_dfire.dat"
+        """Charge la matrice RASP C3."""
+        path = "potentials/c3.nrg"
         if os.path.exists(path):
-            dict_pots = load_dfire_potentials(path)
-            # Conversion simplifiée en tenseur
-            all_types = sorted(list(set([t for pairs in dict_pots.keys() for t in pairs])))
-            self.type_to_idx = {t: i for i, t in enumerate(all_types)}
-            num_types = len(all_types)
-            num_bins = len(next(iter(dict_pots.values())))
-            
-            self.potential_tensor = torch.zeros((num_types, num_types, num_bins), dtype=torch.float32).to(self.device)
-            for (t1, t2), values in dict_pots.items():
-                idx1, idx2 = self.type_to_idx[t1], self.type_to_idx[t2]
-                self.potential_tensor[idx1, idx2, :] = torch.tensor(values, dtype=torch.float32)
-                self.potential_tensor[idx2, idx1, :] = torch.tensor(values, dtype=torch.float32)
+            taille_mat, dict_pots = load_rasp_potentials(path)
+            # RASP potential_tensor is 4D: [seq_sep, type1, type2, dist_bin]
+            self.potential_tensor = torch.zeros(taille_mat, dtype=torch.float32).to(self.device)
+            for (k, t1, t2, dist_bin), energy in dict_pots.items():
+                if k < taille_mat[0] and t1 < taille_mat[1] and t2 < taille_mat[2] and dist_bin < taille_mat[3]:
+                    self.potential_tensor[k, t1, t2, dist_bin] = energy
+                    self.potential_tensor[k, t2, t1, dist_bin] = energy
         else:
-            raise FileNotFoundError("Matrice DFIRE introuvable.")
+            raise FileNotFoundError(f"Fichier de potentiel RASP C3 introuvable : {path}")
 
     def prepare_structure(self):
         """Prépare les tenseurs de coordonnées et les offsets."""
         ppdb = PandasPdb().read_pdb(self.pdb_path)
         self.full_df = ppdb.df['ATOM'].copy()
         
-        # Attribution des types DFIRE pour tous les atomes (nécessaire pour le filtrage)
-        self.full_df['dfire_type'] = self.full_df.apply(lambda row: get_dfire_type(row['atom_name'], row['residue_name']), axis=1)
+        # Attribution des types RASP pour tous les atomes
+        # Pour C3, les types sont 1=A, 2=C, 3=G, 4=U. On soustrait 1 pour l'indexation (0-3).
+        self.full_df['rasp_type'] = self.full_df.apply(lambda row: get_rasp_type(row['residue_name'], row['atom_name'], "c3"), axis=1)
+        self.full_df['rasp_type'] = self.full_df['rasp_type'].apply(lambda x: x - 1 if x != -1 else -1)
         
-        # Extraction des coordonnées de référence (C3') pour chaque résidu
+        # Extraction des résidus uniques
         res_ids = self.full_df['residue_number'].values
         unique_res = np.unique(res_ids)
         num_nucs = len(unique_res)
         res_to_idx = {res: i for i, res in enumerate(unique_res)}
         
+        # Coordonnées de référence (C3') pour chaque résidu
         ref_coords_init = torch.zeros((num_nucs, 3), dtype=torch.float32).to(self.device)
         for i, res in enumerate(unique_res):
             mask = (self.full_df['residue_number'] == res) & (self.full_df['atom_name'] == self.ref_atom)
@@ -92,8 +91,7 @@ class RNA_DFIRE_C3_Optimizer:
         self.all_offsets = all_coords - ref_coords_init[self.all_atom_to_nuc]
         
         # Sélection des atomes ACTIFS pour l'optimisation (C3' pour score, O3'/P pour backbone)
-        # On ne garde que les C3' qui ont un type DFIRE connu
-        mask_c3 = (self.full_df['atom_name'] == self.ref_atom) & (self.full_df['dfire_type'].isin(self.type_to_idx.keys()))
+        mask_c3 = (self.full_df['atom_name'] == self.ref_atom) & (self.full_df['rasp_type'] != -1)
         mask_bb = self.full_df['atom_name'].isin(["O3'", "P"])
         
         self.df_active = self.full_df[mask_c3 | mask_bb].copy().reset_index(drop=True)
@@ -101,19 +99,26 @@ class RNA_DFIRE_C3_Optimizer:
         self.active_atom_to_nuc = torch.tensor([res_to_idx[r] for r in self.df_active['residue_number']], dtype=torch.long).to(self.device)
         self.active_offsets = active_coords - ref_coords_init[self.active_atom_to_nuc]
         
-        # Index des paires C3' pour le calcul du score (uniquement C3')
+        # Index des paires C3' pour le calcul du score
         idx_c3_in_active = self.df_active[self.df_active['atom_name'] == self.ref_atom].index
         
-        # On calcule d'abord sur CPU pour pouvoir indexer l'index pandas
         pair_i_cpu, pair_j_cpu = torch.triu_indices(len(idx_c3_in_active), len(idx_c3_in_active), offset=1, device='cpu')
         
         self.pair_i = torch.tensor(idx_c3_in_active[pair_i_cpu], dtype=torch.long).to(self.device)
         self.pair_j = torch.tensor(idx_c3_in_active[pair_j_cpu], dtype=torch.long).to(self.device)
         
-        # Types DFIRE pour ces paires
-        active_types = [self.type_to_idx[t] for t in self.df_active['dfire_type']]
-        self.t1_vals = torch.tensor(active_types, dtype=torch.long).to(self.device)[self.pair_i]
-        self.t2_vals = torch.tensor(active_types, dtype=torch.long).to(self.device)[self.pair_j]
+        # Types RASP et indices de résidus pour le calcul de la séparation séquentielle
+        self.t1_vals = torch.tensor(self.df_active['rasp_type'].values, dtype=torch.long).to(self.device)[self.pair_i]
+        self.t2_vals = torch.tensor(self.df_active['rasp_type'].values, dtype=torch.long).to(self.device)[self.pair_j]
+        
+        nuc_indices = torch.tensor([res_to_idx[r] for r in self.df_active['residue_number']], dtype=torch.long).to(self.device)
+        nuc_i = nuc_indices[self.pair_i]
+        nuc_j = nuc_indices[self.pair_j]
+        
+        # Séparation séquentielle max_sep de la matrice (souvent 9 ici: 0 à 8)
+        sep = torch.abs(nuc_i - nuc_j)
+        max_k = self.potential_tensor.size(0) - 1
+        self.k_vals = torch.clamp(sep - 1, 0, max_k)
 
         # Préparation Backbone (O3'-P)
         self.bb_o3_idx, self.bb_p_idx = [], []
@@ -147,21 +152,23 @@ class RNA_DFIRE_C3_Optimizer:
         return self.ref_coords[atom_to_nuc] + rotated_offsets
 
     def calculate_score(self, coords):
-        # 1. Score DFIRE (C3' uniquement)
+        # 1. Score RASP (C3' uniquement)
         p1, p2 = coords[self.pair_i], coords[self.pair_j]
         dists = torch.norm(p1 - p2, dim=1) + 1e-8
         
-        step, num_bins = 0.7, self.potential_tensor.size(2)
+        # RASP bins: step=0.5, max=20.0 (selon matrice nrg)
+        step, num_bins = 0.5, self.potential_tensor.size(3)
         d_scaled = torch.clamp(dists / step, 0.0, float(num_bins - 1))
         d0 = d_scaled.long()
         d1 = torch.clamp(d0 + 1, max=num_bins - 1)
         alpha = d_scaled - d0.float()
         
-        e0 = self.potential_tensor[self.t1_vals, self.t2_vals, d0]
-        e1 = self.potential_tensor[self.t1_vals, self.t2_vals, d1]
+        # Indexation: [k, t1, t2, dist_bin]
+        e0 = self.potential_tensor[self.k_vals, self.t1_vals, self.t2_vals, d0]
+        e1 = self.potential_tensor[self.k_vals, self.t1_vals, self.t2_vals, d1]
         energy = (1 - alpha) * e0 + alpha * e1
         
-        dfire_score = torch.sum(energy * (dists < 19.6).float())
+        rasp_score = torch.sum(energy * (dists < 20.0).float())
         
         # 2. Backbone penalty
         penalty = torch.tensor(0.0, device=self.device)
@@ -169,14 +176,14 @@ class RNA_DFIRE_C3_Optimizer:
             d_bb = torch.norm(coords[self.bb_o3_idx] - coords[self.bb_p_idx], dim=1)
             penalty = self.backbone_weight * torch.sum((d_bb - self.target_bb_dist)**2)
             
-        return dfire_score, penalty
+        return rasp_score, penalty
 
     def run_optimization(self):
         optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
         best_ref = self.ref_coords.clone().detach()
         best_rot = self.rot_angles.clone().detach()
         
-        print(f"🚀 Optimisation C3' en cours ({self.num_cycles} cycles)...")
+        print(f"🚀 Optimisation RASP C3' en cours ({self.num_cycles} cycles)...")
         
         for cycle in range(self.num_cycles):
             for step in range(self.epochs_per_cycle):
@@ -192,10 +199,8 @@ class RNA_DFIRE_C3_Optimizer:
                     best_ref.copy_(self.ref_coords)
                     best_rot.copy_(self.rot_angles)
             
-            # Affichage périodique
-            print(f"Cycle {cycle+1:2d} | Meilleur Score: {self.best_score:.2f} | DFIRE Score : {score.item():.2f} | Pénalité : {penalty.item():.2f}")
+            print(f"Cycle {cycle+1:2d} | Meilleur Score: {self.best_score:.2f} | RASP Score : {score.item():.2f} | Pénalité : {penalty.item():.2f}")
 
-            # Shake
             if cycle < self.num_cycles - 1:
                 with torch.no_grad():
                     decay = 1.0 - (cycle / self.num_cycles)
@@ -203,7 +208,6 @@ class RNA_DFIRE_C3_Optimizer:
                     self.rot_angles.add_(torch.randn_like(self.rot_angles) * self.noise_angles * decay)
                 optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
 
-        # Restauration du meilleur état
         with torch.no_grad():
             self.ref_coords.copy_(best_ref)
             self.rot_angles.copy_(best_rot)
@@ -217,7 +221,7 @@ class RNA_DFIRE_C3_Optimizer:
             final_coords = self.get_coords(self.all_atom_to_nuc, self.all_offsets).cpu().numpy()
         
         out_ppdb = PandasPdb()
-        out_ppdb.df['ATOM'] = self.full_df.copy().drop(columns=['dfire_type'])
+        out_ppdb.df['ATOM'] = self.full_df.copy().drop(columns=['rasp_type'])
         out_ppdb.df['ATOM'][['x_coord', 'y_coord', 'z_coord']] = final_coords
         out_ppdb.to_pdb(path=self.output_path)
         print(f"💾 Structure complète sauvegardée dans : {self.output_path}")

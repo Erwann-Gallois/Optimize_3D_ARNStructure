@@ -135,6 +135,11 @@ def get_rasp_type(res_name, atom_name, type_RASP="all"):
         res_name = res_name[0]
         
     atom_name = atom_name.strip()
+
+    if type_RASP == "c3":
+        types = {"A" : 1, "C" : 2, "G" : 3, "U" : 4}
+        return types.get(res_name, -1)
+
     
     # Nettoyage atome PDB (souvent O5* au lieu de O5')
     atom_name = atom_name.replace('*', "'")

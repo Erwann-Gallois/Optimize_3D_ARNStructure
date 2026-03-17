@@ -28,8 +28,7 @@ class RNA_RASP_Optimizer:
             backbone_weight (float): Poids pour la contrainte de continuité du squelette ARN. (Défaut : 100.0)
         """
         if not os.path.exists(pdb_path):
-            raise FileNotFoundError(f"Le fichier PDB {pdb_path} n'existe pas.")
-        
+            raise FileNotFoundError(f"Le fichier PDB {pdb_path} n'existe pas.") 
         self.pdb_path = pdb_path
         self.lr = lr
         self.type_RASP = type_RASP
@@ -107,30 +106,26 @@ class RNA_RASP_Optimizer:
             else:
                 first_idx = (self.df_filtered['residue_number'] == res).idxmax()
                 ref_coords_init[i] = raw_coords[first_idx]
-
-        # PARAMÈTRES OPTIMISABLES : 
         # 1. Position du centre (translation)
         self.ref_coords = torch.nn.Parameter(ref_coords_init.contiguous())
-        
         # 2. Angles de rotation (Euler : rx, ry, rz) initiaux à 0
         self.rot_angles = torch.nn.Parameter(torch.zeros((num_nucs, 3), dtype=torch.float32))
-        
         # CONSTANTE : offsets internes des atomes par rapport à leur référence
         self.offsets = raw_coords - ref_coords_init[self.atom_to_nuc_idx]
         
         # Identification Backbone
-        self.bb_i_idx, self.bb_j_idx = [], []
+        self.bb_o3_idx, self.bb_p_idx = [], []
         for i in range(len(unique_res) - 1):
             res_curr = unique_res[i]
             res_next = unique_res[i+1]
             idx_o3 = self.df_filtered[(self.df_filtered['residue_number'] == res_curr) & (self.df_filtered['atom_name'] == "O3'")].index
             idx_p = self.df_filtered[(self.df_filtered['residue_number'] == res_next) & (self.df_filtered['atom_name'] == "P")].index
             if not idx_o3.empty and not idx_p.empty:
-                self.bb_i_idx.append(idx_o3[0])
-                self.bb_j_idx.append(idx_p[0])
+                self.bb_o3_idx.append(idx_o3[0])
+                self.bb_p_idx.append(idx_p[0])
         
-        self.bb_i_idx = torch.tensor(self.bb_i_idx, dtype=torch.long).to(self.device)
-        self.bb_j_idx = torch.tensor(self.bb_j_idx, dtype=torch.long).to(self.device)
+        self.bb_o3_idx = torch.tensor(self.bb_o3_idx, dtype=torch.long).to(self.device)
+        self.bb_p_idx = torch.tensor(self.bb_p_idx, dtype=torch.long).to(self.device)
         self.target_bb_dist = 1.61 
         
         # Données pour RASP
