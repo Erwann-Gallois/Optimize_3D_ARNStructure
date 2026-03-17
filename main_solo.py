@@ -11,11 +11,11 @@ start_time = time.perf_counter()
 sequence_arn = "CCUGGUAUUGCAGUACCUCCAGGU"
 pdb_initial = "fichier_arn/arn.pdb"
 generer_arn_droit(sequence_arn, pdb_initial)
-opt = RNA_RASP_Optimizer(
+opt = RNA_DFIRE_Optimizer(
     pdb_initial,
     epochs_per_cycle=100,
     lr=0.1,
-    output_path="resultat/mon_arn_optimise_rasp.pdb",
+    output_path="resultat/mon_arn_optimise_dfire.pdb",
     ref_atom="C3'",
     num_cycles=100,
     noise_coords=10.0,

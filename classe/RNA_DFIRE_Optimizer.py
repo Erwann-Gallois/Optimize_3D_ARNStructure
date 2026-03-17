@@ -48,6 +48,11 @@ class RNA_DFIRE_Optimizer:
         self.backbone_weight = backbone_weight
         self.verbose = verbose
         self.bb_o3_idx, self.bb_p_idx = [], []
+        self.VDW_RADII = {
+            'P': 1.8, 'O': 1.5, 'C': 1.7, 'N': 1.55, 'H': 1.2
+        }
+        # Valeur par défaut si l'atome est inconnu
+        self.DEFAULT_VDW = 1.6
         # 1. Chargement des potentiels
         self.load_dict_potentials()
         
@@ -115,6 +120,9 @@ class RNA_DFIRE_Optimizer:
         
         raw_coords = torch.tensor(self.df_filtered[['x_coord', 'y_coord', 'z_coord']].values, dtype=torch.float32).to(self.device)
         res_ids = self.df_filtered['residue_number'].values
+        atom_names = self.df_filtered['atom_name'].values
+        elements = [name[0] for name in atom_names]
+        radii_vals = [self.VDW_RADII.get(e, self.DEFAULT_VDW) for e in elements]
         unique_res = np.unique(res_ids)
         
         res_to_idx = {res: i for i, res in enumerate(unique_res)}
@@ -167,6 +175,8 @@ class RNA_DFIRE_Optimizer:
         self.pair_j = j_idx[mask_inter].to(torch.int32)
         self.t1_vals = atom_types[self.pair_i]
         self.t2_vals = atom_types[self.pair_j]
+        self.vdw_radii_all = torch.tensor(radii_vals, dtype=torch.float32).to(self.device)
+        self.min_dist_vdw = (self.vdw_radii_all[self.pair_i] + self.vdw_radii_all[self.pair_j]) * 0.85
 
     def get_rotation_matrices(self):
         """
