@@ -130,43 +130,95 @@ class RNA_Optimizer:
         print(f" [Métrique Ep {step}] GPU: {gpu_alloc:.1f}MB/{gpu_reserved:.1f}MB ({gpu_name}) | CPU: {cpu_usage}% | RAM: {ram_usage}%")
 
     def run_optimization(self):
-        print(f"Device : {self.device} | Version PyTorch : {torch.__version__}")
         optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
+        
         best_ref_coords = self.ref_coords.clone().detach()
         best_rot_angles = self.rot_angles.clone().detach()
-
         for cycle in range(self.num_cycles):
-            if self.verbose: print(f"\n--- Cycle {cycle+1}/{self.num_cycles} ---")
+            # Calcul du decay global du cycle (0.0 à 1.0)
+            cycle_progress = cycle / max(1, self.num_cycles - 1)
+            decay = 1.0 - cycle_progress
+            print(f"\n--- Cycle {cycle+1}/{self.num_cycles} (Intensité secousse: {decay:.2f}) ---")
+            
             for step in range(self.epochs_per_cycle):
                 optimizer.zero_grad()
+                
+                # 1. Calcul des coordonnées et des scores
                 coords = self.get_current_full_coords()
-                
-                # Calcul des scores (spécifique + commun)
                 score, bb_penalty, clash_penalty = self.calculate_detailed_scores(coords)
-                loss = score + bb_penalty + clash_penalty
                 
+                # 2. Poids dynamique du backbone (plus fort au début du cycle pour "recoller")
+                # On utilise un facteur multiplicateur qui diminue durant les 20 premières époques
+                warmup = 1.0 + 4.0 * np.exp(-step / 10.0)
+                loss = score + (bb_penalty*warmup) + clash_penalty
+                
+                # 3. Rétropropagation
                 loss.backward()
+                
+                # --- LE GRADIENT CLIPPING ---
+                # Empêche un atome de "s'envoler" à cause d'une force trop grande
+                torch.nn.utils.clip_grad_norm_([self.ref_coords, self.rot_angles], max_norm=1.0)
+                
                 optimizer.step()
                 
+                # Sauvegarde du meilleur état global
                 if loss.item() < self.best_score:
                     self.best_score = loss.item()
                     best_ref_coords.copy_(self.ref_coords)
                     best_rot_angles.copy_(self.rot_angles)
                     
-                if self.verbose and (step % 20 == 0 or step == self.epochs_per_cycle - 1):
-                    print(f"Epoch {step:3d} | Total: {loss.item():.2f} | Potentiel: {score.item():.2f} | BB: {bb_penalty.item():.2f}")
-            
-            if cycle < self.num_cycles - 1:
-                decay = 1.0 - (cycle / (self.num_cycles - 1))
-                with torch.no_grad():
-                    self.ref_coords.copy_(best_ref_coords).add_(torch.randn_like(self.ref_coords) * self.noise_coords * decay)
-                    self.rot_angles.copy_(best_rot_angles).add_(torch.randn_like(self.rot_angles) * self.noise_angles * decay)
-                optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
-                torch.cuda.empty_cache()
+                if step % 50 == 0 or step == self.epochs_per_cycle - 1:
+                    print(f" Ep {step:3d} | Total: {loss.item():.1f} | Potential Score: {score.item():.1f} | BB: {bb_penalty.item():.1f} | Clash: {clash_penalty.item():.1f}")
 
+            # --- SECOUSSE INTELLIGENTE (SHAKE) ---
+            if cycle < self.num_cycles - 1:
+                with torch.no_grad():
+                    # On repart toujours du meilleur état trouvé
+                    self.ref_coords.copy_(best_ref_coords)
+                    self.rot_angles.copy_(best_rot_angles)
+                    
+                    # Calcul de l'erreur locale du backbone pour moduler le bruit
+                    current_coords = self.get_current_full_coords()
+                    num_nucs = self.ref_coords.shape[0]
+                    
+                    # Facteur de bruit par nucléotide (1.0 = normal)
+                    nuc_noise_scale = torch.ones(num_nucs, device=self.device) * 0.2
+                    
+                    if len(self.bb_o3_idx) > 0:
+                        p_o3 = current_coords[self.bb_o3_idx]
+                        p_p = current_coords[self.bb_p_idx]
+                        # Erreur absolue par rapport à 1.61A
+                        bb_err = torch.abs(torch.norm(p_o3 - p_p, dim=1) - self.target_bb_dist)
+                        
+                        # On récupère les indices des nucléotides i et i+1
+                        idx_i = self.atom_to_nuc_idx[self.bb_o3_idx]
+                        idx_j = self.atom_to_nuc_idx[self.bb_p_idx]
+                        
+                        # On ajoute l'erreur au scale de bruit des résidus concernés
+                        # Plus l'erreur est grande, plus on secoue fort ces deux-là
+                        nuc_noise_scale.index_add_(0, idx_i, bb_err * 2.0)
+                        nuc_noise_scale.index_add_(0, idx_j, bb_err * 2.0)
+
+                    # Clamp pour éviter des secousses absurdes (max 3x le bruit de base)
+                    nuc_noise_scale = torch.clamp(nuc_noise_scale, 0.1, 3.0).unsqueeze(1)
+
+                    # Application du bruit modulé
+                    noise_c = torch.randn_like(self.ref_coords) * self.noise_coords * decay
+                    noise_a = torch.randn_like(self.rot_angles) * self.noise_angles * decay
+                    
+                    self.ref_coords.add_(noise_c * nuc_noise_scale)
+                    self.rot_angles.add_(noise_a * nuc_noise_scale)
+                    
+                print(f" > Secousse localisée effectuée (zones de cassure prioritaires).")
+                
+                # Reset de l'optimiseur pour oublier les moments d'Adam
+                optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
+
+        print("\n✅ Optimisation terminée. Restauration de la meilleure structure...")
         with torch.no_grad():
             self.ref_coords.copy_(best_ref_coords)
             self.rot_angles.copy_(best_rot_angles)
+            
         self.save_optimized_pdb()
 
     def save_optimized_pdb(self):

@@ -28,9 +28,9 @@ def main():
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs per cycle (default: 50)")
     parser.add_argument("--cycles", type=int, default=20, help="Number of cycles (default: 20)")
     parser.add_argument("--lr", type=float, default=0.2, help="Learning rate (default: 0.2)")
-    parser.add_argument("--noise-coords", type=float, default=10.0, help="Noise on coordinates (default: 10.0)")
-    parser.add_argument("--noise-angles", type=float, default=15.0, help="Noise on angles (default: 15.0)")
-    parser.add_argument("--backbone-weight", type=float, default=100.0, help="Backbone weight (default: 100.0)")
+    parser.add_argument("--noise-coords", type=float, default=0.5, help="Noise on coordinates (default: 10.0)")
+    parser.add_argument("--noise-angles", type=float, default=0.2, help="Noise on angles (default: 15.0)")
+    parser.add_argument("--backbone-weight", type=float, default=10.0, help="Backbone weight (default: 100.0)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
 
     args = parser.parse_args()
