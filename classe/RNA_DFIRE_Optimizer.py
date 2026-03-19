@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from biopandas.pdb import PandasPdb
 from parse_dfire_potentials import load_dfire_potentials, get_dfire_type
+import psutil
 
 class RNA_DFIRE_Optimizer:
     """
@@ -222,43 +223,46 @@ class RNA_DFIRE_Optimizer:
 
         Returns:
             tuple: (dfire_score, bb_penalty) - Énergies scalaires PyTorch.
-        """
-        n_pairs = self.pair_i.size(0)
-        chunk_size = 5000000 # On traite par blocs de 5 millions de paires pour éviter l'OOM CUDA
-        
+        """       
         dfire_score = torch.tensor(0.0, device=self.device)
         
         max_dist = 19.6
         step = 0.7
         num_bins = self.potential_tensor.size(2)
+        # Calcul direct (on profite des 48Go de la A40)
+        p1 = current_full_coords[self.pair_i.long()]
+        p2 = current_full_coords[self.pair_j.long()]
         
-        for start_idx in range(0, n_pairs, chunk_size):
-            end_idx = min(start_idx + chunk_size, n_pairs)
-            
-            p1 = current_full_coords[self.pair_i[start_idx:end_idx].long()]
-            p2 = current_full_coords[self.pair_j[start_idx:end_idx].long()]
-            
-            dists = torch.norm(p1 - p2, dim=1) + 1e-8
-            
-            # Interpolation linéaire pour le score
-            d_scaled = dists / step
-            d_clamp = torch.clamp(d_scaled, 0.0, float(num_bins - 1))
-            
-            d0 = torch.floor(d_clamp).long()
-            d1 = torch.clamp(d0 + 1, max=num_bins - 1)
-            alpha = d_clamp - d0.float()
-            
-            t1 = self.t1_vals[start_idx:end_idx]
-            t2 = self.t2_vals[start_idx:end_idx]
-            
-            energy0 = self.potential_tensor[t1.long(), t2.long(), d0]
-            energy1 = self.potential_tensor[t1.long(), t2.long(), d1]
-            
-            interp_energy = (1 - alpha) * energy0 + alpha * energy1
-            
-            # Masque pour les distances > 19.6
-            valid_mask = (dists < max_dist).float()
-            dfire_score = dfire_score + torch.sum(interp_energy * valid_mask)
+        # Calcul des distances en une seule opération GPU
+        dists = torch.norm(p1 - p2, dim=1) + 1e-8
+        
+        # Interpolation DFIRE vectorisée (pas de boucle !)
+        num_bins = self.potential_tensor.size(2)
+        step = 0.7
+        d_scaled = dists / step
+        d_clamp = torch.clamp(d_scaled, 0.0, float(num_bins - 1))
+        
+        d0 = torch.floor(d_clamp).long()
+        d1 = torch.clamp(d0 + 1, max=num_bins - 1)
+        alpha = d_clamp - d0.float()
+        
+        # Extraction des énergies en masse
+        energy0 = self.potential_tensor[self.t1_vals.long(), self.t2_vals.long(), d0]
+        energy1 = self.potential_tensor[self.t1_vals.long(), self.t2_vals.long(), d1]
+        
+        dfire_score = torch.sum(((1 - alpha) * energy0 + alpha * energy1) * (dists < 19.6).float())
+
+
+        # --- [Calcul Anti-Clash] ---
+        # On ne pénalise que si dist < min_dist_vdw
+        clash_mask = dists < self.min_dist_vdw
+        clash_penalty = torch.tensor(0.0, device=self.device)
+        
+        if clash_mask.any():
+            # Formule : force = K * (distance_minimale - distance_réelle)^2
+            # K doit être élevé pour agir comme un mur infranchissable
+            diff = self.min_dist_vdw[clash_mask] - dists[clash_mask]
+            clash_penalty = torch.tensor(1000.0, device=self.device) * torch.sum(diff**2)
 
         # Contrainte Backbone
         if len(self.bb_o3_idx) > 0:
@@ -269,7 +273,24 @@ class RNA_DFIRE_Optimizer:
         else:
             bb_penalty = torch.tensor(0.0, device=self.device)
             
-        return dfire_score, bb_penalty
+        return dfire_score, bb_penalty, clash_penalty
+
+    def print_metrics(self, step):
+        # --- MÉTRIQUES GPU (PyTorch) ---
+        if torch.cuda.is_available():
+            # Mémoire actuellement allouée par les tenseurs
+            gpu_alloc = torch.cuda.memory_allocated() / 1024**2  # en Mo
+            # Mémoire réservée par le cache de PyTorch
+            gpu_reserved = torch.cuda.memory_reserved() / 1024**2  # en Mo
+            gpu_name = torch.cuda.get_device_name(0)
+        else:
+            gpu_alloc, gpu_reserved, gpu_name = 0, 0, "CPU Only"
+
+        # --- MÉTRIQUES CPU & RAM (psutil) ---
+        cpu_usage = psutil.cpu_percent() # % d'utilisation CPU global
+        ram_usage = psutil.virtual_memory().percent # % RAM système
+        
+        print(f" [Métrique Ep {step}] GPU: {gpu_alloc:.1f}MB/{gpu_reserved:.1f}MB ({gpu_name}) | CPU: {cpu_usage}% | RAM: {ram_usage}%")
 
     def run_optimization(self):
         """
@@ -277,6 +298,11 @@ class RNA_DFIRE_Optimizer:
         Utilise Adam pour minimiser loss = DFIRE + Backbone.
         Inclut une phase de secouage (cooling/decay) entre les cycles pour éviter les minima locaux.
         """
+        print(f"Version PyTorch : {torch.__version__}")
+        print(f"CUDA disponible : {torch.cuda.is_available()}")
+        print(f"Version CUDA de PyTorch : {torch.version.cuda}")
+        if torch.cuda.is_available():
+            print(f"Nom du GPU : {torch.cuda.get_device_name(0)}")
         optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
         
         best_ref_coords = self.ref_coords.clone().detach()
@@ -295,8 +321,8 @@ class RNA_DFIRE_Optimizer:
                 optimizer.zero_grad()
                 
                 coords = self.get_current_full_coords()
-                score, penalty = self.calculate_detailed_scores(coords)
-                loss = score + penalty
+                score, bb_penalty, clash_penalty = self.calculate_detailed_scores(coords)
+                loss = score + bb_penalty + clash_penalty
                 
                 loss.backward()
                 optimizer.step()
@@ -307,10 +333,11 @@ class RNA_DFIRE_Optimizer:
                     best_rot_angles.copy_(self.rot_angles)
                     
                 if self.verbose and (step % 100 == 0 or step == self.epochs_per_cycle - 1):
-                    print(f"Epoch {step:3d} | Total: {loss.item():.2f} | DFIRE: {score.item():.2f} | Backbone: {penalty.item():.2f}")
+                    #  print(f"Epoch {step:3d} | Total: {loss.item():.2f} | DFIRE: {score.item():.2f} | Backbone: {bb_penalty.item():.2f} | Clash: {clash_penalty.item():.2f}")
+                    self.print_metrics(step)
                 
                 # Nettoyage explicite pour libérer de la mémoire si nécessaire
-                del coords, score, penalty, loss
+                del coords, score, bb_penalty, clash_penalty, loss
             
             # --- SHAKE ---
             if cycle < self.num_cycles - 1:

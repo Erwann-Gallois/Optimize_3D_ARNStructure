@@ -14,17 +14,17 @@ for seq, name in zip(seqs, nom):
     start_time = time.perf_counter()
     taille = len(seq)
     pdb_initial = "fichier_arn/arn_" + str(taille) + ".pdb"
-    generer_arn_droit(seq, pdb_initial)
-    opt = RNA_RASP_Optimizer(
+    opt = RNA_DFIRE_Optimizer(
         pdb_initial, 
-        epochs_per_cycle=100,
-        lr=0.1,
-        output_path="resultat/mon_arn_optimise_rasp_" + str(taille) + ".pdb",
+       epochs_per_cycle=50,
+        lr=0.2,
+        output_path="resultat/mon_arn_optimise_" + str(taille) + "_dfire.pdb",
         ref_atom="C3'",
-        num_cycles=50,
+        num_cycles=20,
         noise_coords=10.0,
         noise_angles=15.0,
-        backbone_weight=100.0
+        backbone_weight=100.0,
+        verbose=False
     )
 
     print("\n--- Démarrage de l'optimisation ---")
@@ -36,6 +36,6 @@ for seq, name in zip(seqs, nom):
     execution_time[name] = end_time - start_time
     print(f"Optimisation terminée en {execution_time[name]:.4f} secondes.")
 
-with open("execution_time_rasp_cpu.txt", "w") as f:
+with open("execution_time_dfire_cpu.txt", "w") as f:
     for name, time in execution_time.items():
         f.write(f"{name}: {time:.4f}\n")
