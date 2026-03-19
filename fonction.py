@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 from biopandas.pdb import PandasPdb
 import nglview as nv
 from Bio import SeqIO
+from Bio.PDB import PDBParser, PDBIO, Atom
+import sys
 
 def view_structure(file_pdb):
     # 1. Charger le fichier généré
@@ -108,4 +110,42 @@ def read_fasta_file (fasta_file):
         sequences.append(record.seq)
         nom.append(record.id)
     return sequences, nom
-        
+
+def fix_amber_pdb(input_pdb, output_pdb):
+    parser = PDBParser(QUIET=True)
+    structure = parser.get_structure('rna', input_pdb)
+
+    # On parcourt la structure pour trouver le premier résidu
+    for model in structure:
+        for chain in model:
+            # On récupère le premier résidu (souvent l'id 1)
+            first_residue = next(chain.get_residues())
+            
+            if 'P' in first_residue and 'OP3' not in first_residue:
+                # On récupère l'atome OP2 pour copier ses propriétés
+                if 'OP2' in first_residue:
+                    op2 = first_residue['OP2']
+                    coord = op2.get_coord()
+                    
+                    # On crée le nouvel atome OP3 
+                    # On décale légèrement les coordonnées de OP2
+                    new_coord = coord + [0.5, 0.5, 0.5]
+                    
+                    op3 = Atom.Atom(
+                        name='OP3',
+                        coord=new_coord,
+                        bfactor=op2.get_bfactor(),   # Utilise bfactor et non B
+                        occupancy=op2.get_occupancy(),
+                        altloc=op2.get_altloc(),
+                        fullname=' OP3',
+                        serial_number=3,             # Optionnel
+                        element='O'
+                    )
+                    
+                    first_residue.add(op3)
+                    print(f"✅ OP3 ajouté au résidu {first_residue.get_resname()} {first_residue.id[1]}")
+
+    # Réécriture propre du fichier
+    io = PDBIO()
+    io.set_structure(structure)
+    io.save(output_pdb)

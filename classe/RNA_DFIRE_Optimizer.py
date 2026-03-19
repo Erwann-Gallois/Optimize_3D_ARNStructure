@@ -1,375 +1,67 @@
-import os
+from RNA_Optimizer import RNA_Optimizer
+from parse_dfire_potentials import load_dfire_potentials, get_dfire_type
 import torch
+import os
 import numpy as np
 import pandas as pd
 from biopandas.pdb import PandasPdb
-from parse_dfire_potentials import load_dfire_potentials, get_dfire_type
-import psutil
 
-class RNA_DFIRE_Optimizer:
-    """
-    Optimiseur de structure ARN basé sur le potentiel DFIRE (Distance-scaled, Finite Ideal-gas Reference state).
-    Cette classe permet de raffiner la structure 3D d'un ARN en traitant chaque nucléotide comme un corps rigide
-    et en minimisant l'énergie DFIRE ainsi que les contraintes de squelette (backbone).
-    """
-    def __init__(self, pdb_path, lr=0.2, output_path="output_rigid.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5, backbone_weight=100.0, verbose = True):
-        """
-        Initialise l'optimiseur RNA_DFIRE_Optimizer.
-
-        Args:
-            pdb_path (str): Chemin vers le fichier PDB de la structure ARN.
-            lr (float): Taux d'apprentissage pour l'optimiseur Adam. (Défaut : 0.2)
-            output_path (str): Chemin pour sauvegarder la structure optimisée. (Défaut : "output_rigid.pdb")
-            ref_atom (str): Atome centre de chaque nucléotide pour les rotations/translations. (Défaut : "C3'")
-            num_cycles (int): Nombre de cycles globaux avec secousse (shake). (Défaut : 5)
-            epochs_per_cycle (int): Nombre d'époques d'optimisation par cycle. (Défaut : 100)
-            noise_coords (float): Amplitude du bruit de translation (en Å) lors du secouage. (Défaut : 1.5)
-            noise_angles (float): Amplitude du bruit de rotation (en radians) lors du secouage. (Défaut : 0.5)
-            backbone_weight (float): Poids pour la contrainte de continuité du squelette ARN. (Défaut : 100.0)
-        """
-        self.t2_vals = None
-        self.t1_vals = None
-        self.pair_j = None
-        self.pair_i = None
-        self.potential_tensor = None
-        if not os.path.exists(pdb_path):
-            raise FileNotFoundError(f"Le fichier PDB {pdb_path} n'existe pas.")
-        self.target_bb_dist = 1.61
-        self.pdb_path = pdb_path
-        self.lr = lr
-        self.output_path = output_path
-        self.ref_atom = ref_atom
-        self.num_cycles = num_cycles
-        self.epochs_per_cycle = epochs_per_cycle
-        self.noise_coords = noise_coords
-        self.noise_angles = noise_angles
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Utilisation du device : {self.device}")
-        self.best_score = float('inf')
-        self.backbone_weight = backbone_weight
-        self.verbose = verbose
-        self.bb_o3_idx, self.bb_p_idx = [], []
-        self.VDW_RADII = {
-            'P': 1.8, 'O': 1.5, 'C': 1.7, 'N': 1.55, 'H': 1.2
-        }
-        # Valeur par défaut si l'atome est inconnu
-        self.DEFAULT_VDW = 1.6
-        # 1. Chargement des potentiels
-        self.load_dict_potentials()
-        
-        # 2. Chargement et préparation de la structure rigide
-        self.convert_pdb_to_rigid_tensors(self.pdb_path)
-
-    def load_dict_potentials(self):
-        """
-        Charge la matrice de potentiels DFIRE depuis le fichier statique 'potentials/matrice_dfire.dat'.
-        """
+class RNA_DFIRE_Optimizer(RNA_Optimizer):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # 1. Chargement Potentiels
         path = "potentials/matrice_dfire.dat"
         if os.path.exists(path):
             dict_pots = load_dfire_potentials(path)
-            self.convert_dict_to_tensor(dict_pots)
-        else:
-            print(f"Fichier de potentiel non trouvé : {path}")
-
-    def convert_dict_to_tensor(self, dict_pots):
-        """
-        Transforme le dictionnaire de potentiels en un tenseur 3D PyTorch indexé par types d'atomes.
-
-        Args:
-            dict_pots (dict): Dictionnaire mapping (type1, type2) -> tableau de potentiels.
-        """
-        # Récupérer tous les types d'atomes uniques
-        all_types = set()
-        for t1, t2 in dict_pots.keys():
-            all_types.add(t1)
-            all_types.add(t2)
+            self._convert_dict_to_tensor(dict_pots)
         
-        self.sorted_types = sorted(list(all_types))
-        self.type_to_idx = {t: i for i, t in enumerate(self.sorted_types)}
-        num_types = len(self.sorted_types)
-        num_bins = len(next(iter(dict_pots.values())))
-        
-        # Création du tenseur (num_types, num_types, num_bins)
-        self.potential_tensor = torch.zeros((num_types, num_types, num_bins), dtype=torch.float32).to(self.device)
-        
-        for (t1, t2), values in dict_pots.items():
-            if t1 in self.type_to_idx and t2 in self.type_to_idx:
-                idx1 = self.type_to_idx[t1]
-                idx2 = self.type_to_idx[t2]
-                self.potential_tensor[idx1, idx2, :] = torch.tensor(values, dtype=torch.float32)
-                self.potential_tensor[idx2, idx1, :] = torch.tensor(values, dtype=torch.float32)
-
-    def convert_pdb_to_rigid_tensors(self, pdb_path):
-        """
-        Analyse le PDB, extrait les coordonnées et définit les nucléotides comme corps rigides.
-        Initialise les paramètres de translation (ref_coords) et de rotation (rot_angles).
-
-        Args:
-            pdb_path (str): Chemin vers le fichier PDB.
-        """
-        ppdb = PandasPdb().read_pdb(pdb_path)
+        # 2. Préparation Structure
+        ppdb = PandasPdb().read_pdb(self.pdb_path)
         df_atoms = ppdb.df['ATOM'].copy()
-        
-        # Filtrage et typage DFIRE
         df_atoms['dfire_type'] = df_atoms.apply(lambda row: get_dfire_type(row['atom_name'], row['residue_name']), axis=1)
         self.df_filtered = df_atoms[df_atoms['dfire_type'] != -1].reset_index(drop=True)
+        self.type_to_idx = {t: i for i, t in enumerate(self.sorted_types)}
+        self.df_filtered = self.df_filtered[self.df_filtered['dfire_type'].isin(self.type_to_idx.keys())].reset_index(drop=True)
         
-        # Vérifier que les types existent dans notre dictionnaire de potentiels
-        # On ne garde que les atomes dont le type est connu dans DFIRE
-        mask_known = self.df_filtered['dfire_type'].isin(self.type_to_idx.keys())
-        self.df_filtered = self.df_filtered[mask_known].reset_index(drop=True)
-        
-        raw_coords = torch.tensor(self.df_filtered[['x_coord', 'y_coord', 'z_coord']].values, dtype=torch.float32).to(self.device)
+        self.prepare_rigid_structure(self.df_filtered)
+        self._setup_dfire_pairs()
+
+    def _convert_dict_to_tensor(self, dict_pots):
+        all_types = set()
+        for t1, t2 in dict_pots.keys(): all_types.update([t1, t2])
+        self.sorted_types = sorted(list(all_types))
+        type_to_idx = {t: i for i, t in enumerate(self.sorted_types)}
+        num_bins = len(next(iter(dict_pots.values())))
+        self.potential_tensor = torch.zeros((len(self.sorted_types), len(self.sorted_types), num_bins), device=self.device)
+        for (t1, t2), values in dict_pots.items():
+            idx1, idx2 = type_to_idx[t1], type_to_idx[t2]
+            v_tensor = torch.tensor(values, dtype=torch.float32, device=self.device)
+            self.potential_tensor[idx1, idx2, :] = self.potential_tensor[idx2, idx1, :] = v_tensor
+
+    def _setup_dfire_pairs(self):
+        atom_types = torch.tensor([self.type_to_idx[t] for t in self.df_filtered['dfire_type']], dtype=torch.int32, device=self.device)
         res_ids = self.df_filtered['residue_number'].values
-        atom_names = self.df_filtered['atom_name'].values
-        elements = [name[0] for name in atom_names]
-        radii_vals = [self.VDW_RADII.get(e, self.DEFAULT_VDW) for e in elements]
-        unique_res = np.unique(res_ids)
-        
-        res_to_idx = {res: i for i, res in enumerate(unique_res)}
-        self.atom_to_nuc_idx = torch.tensor([res_to_idx[r] for r in res_ids], dtype=torch.long).to(self.device)
-        
-        num_nucs = len(unique_res)
-        ref_coords_init = torch.zeros((num_nucs, 3), dtype=torch.float32).to(self.device)
-        
-        for i, res in enumerate(unique_res):
-            mask = (self.df_filtered['residue_number'] == res) & (self.df_filtered['atom_name'] == self.ref_atom)
-            if mask.any():
-                ref_idx = mask.idxmax()
-                ref_coords_init[i] = raw_coords[ref_idx]
-            else:
-                first_idx = (self.df_filtered['residue_number'] == res).idxmax()
-                ref_coords_init[i] = raw_coords[first_idx]
+        i_idx, j_idx = torch.triu_indices(len(self.df_filtered), len(self.df_filtered), offset=1, device=self.device)
+        mask = torch.abs(torch.tensor(res_ids, device=self.device)[i_idx] - torch.tensor(res_ids, device=self.device)[j_idx]) > 2
+        self.pair_i, self.pair_j = i_idx[mask].to(torch.int32), j_idx[mask].to(torch.int32)
+        self.t1_vals, self.t2_vals = atom_types[self.pair_i.long()], atom_types[self.pair_j.long()]
+        self.min_dist_vdw = (self.vdw_radii_all[self.pair_i.long()] + self.vdw_radii_all[self.pair_j.long()]) * 0.85
 
-        # PARAMÈTRES OPTIMISABLES : 
-        self.ref_coords = torch.nn.Parameter(ref_coords_init.contiguous())
-        self.rot_angles = torch.nn.Parameter(torch.zeros((num_nucs, 3), dtype=torch.float32).to(self.device))
-        
-        # CONSTANTE : offsets internes
-        self.offsets = raw_coords - ref_coords_init[self.atom_to_nuc_idx]
-        
-        # Identification Backbone (pour la contrainte de distance O3'-P)
-        for i in range(len(unique_res) - 1):
-            res_curr = unique_res[i]
-            res_next = unique_res[i+1]
-            idx_o3 = self.df_filtered[(self.df_filtered['residue_number'] == res_curr) & (self.df_filtered['atom_name'] == "O3'")].index
-            idx_p = self.df_filtered[(self.df_filtered['residue_number'] == res_next) & (self.df_filtered['atom_name'] == "P")].index
-            if not idx_o3.empty and not idx_p.empty:
-                self.bb_o3_idx.append(idx_o3[0])
-                self.bb_p_idx.append(idx_p[0])
-        
-        self.bb_o3_idx = torch.tensor(self.bb_o3_idx, dtype=torch.long).to(self.device)
-        self.bb_p_idx = torch.tensor(self.bb_p_idx, dtype=torch.long).to(self.device)
-        
-        # Préparation des paires pour le calcul du score DFIRE
-        # Préparation des paires pour le calcul du score DFIRE
-        atom_types = torch.tensor([self.type_to_idx[t] for t in self.df_filtered['dfire_type']], dtype=torch.int32).to(self.device)
-        n_atoms = len(self.df_filtered)
-        i_idx, j_idx = torch.triu_indices(n_atoms, n_atoms, offset=1, device=self.device)
-        
-        res_tensor = torch.tensor(res_ids, dtype=torch.int32).to(self.device)
-        sep = torch.abs(res_tensor[i_idx] - res_tensor[j_idx])
-        mask_inter = sep > 2
-        
-        # On utilise int32 pour économiser de la mémoire GPU (supporte jusqu'à deux milliards d'atomes).
-        self.pair_i = i_idx[mask_inter].to(torch.int32)
-        self.pair_j = j_idx[mask_inter].to(torch.int32)
-        self.t1_vals = atom_types[self.pair_i]
-        self.t2_vals = atom_types[self.pair_j]
-        self.vdw_radii_all = torch.tensor(radii_vals, dtype=torch.float32).to(self.device)
-        self.min_dist_vdw = (self.vdw_radii_all[self.pair_i] + self.vdw_radii_all[self.pair_j]) * 0.85
-
-    def get_rotation_matrices(self):
-        """
-        Calcule les matrices de rotation 3x3 pour chaque nucléotide à partir des angles Euler.
-
-        Returns:
-            torch.Tensor: Tenseur de matrices de rotation (N, 3, 3).
-        """
-        cos_a, sin_a = torch.cos(self.rot_angles[:, 0]), torch.sin(self.rot_angles[:, 0])
-        cos_b, sin_b = torch.cos(self.rot_angles[:, 1]), torch.sin(self.rot_angles[:, 1])
-        cos_g, sin_g = torch.cos(self.rot_angles[:, 2]), torch.sin(self.rot_angles[:, 2])
-
-        N = self.rot_angles.shape[0]
-        Rx = torch.eye(3, device=self.device).unsqueeze(0).repeat(N, 1, 1)
-        Rx[:, 1, 1], Rx[:, 1, 2], Rx[:, 2, 1], Rx[:, 2, 2] = cos_a, -sin_a, sin_a, cos_a
-
-        Ry = torch.eye(3, device=self.device).unsqueeze(0).repeat(N, 1, 1)
-        Ry[:, 0, 0], Ry[:, 0, 2], Ry[:, 2, 0], Ry[:, 2, 2] = cos_b, sin_b, -sin_b, cos_b
-
-        Rz = torch.eye(3, device=self.device).unsqueeze(0).repeat(N, 1, 1)
-        Rz[:, 0, 0], Rz[:, 0, 1], Rz[:, 1, 0], Rz[:, 1, 1] = cos_g, -sin_g, sin_g, cos_g
-
-        return torch.bmm(Rz, torch.bmm(Ry, Rx))
-
-    def get_current_full_coords(self):
-        """
-        Applique les transformations (rotation + translation) aux atomes pour obtenir les coordonnées 3D actuelles.
-
-        Returns:
-            torch.Tensor: Coordonnées cartésiennes de tous les atomes (N_atomes, 3).
-        """
-        R = self.get_rotation_matrices() 
-        R_atoms = R[self.atom_to_nuc_idx]
-        rotated_offsets = torch.bmm(R_atoms, self.offsets.unsqueeze(2)).squeeze(2)
-        return self.ref_coords[self.atom_to_nuc_idx] + rotated_offsets
-
-    def calculate_detailed_scores(self, current_full_coords):
-        """
-        Calcule l'énergie DFIRE totale par paire d'atomes et la pénalité de distance du squelette (backbone).
-
-        Args:
-            current_full_coords (torch.Tensor): Coordonnées 3D actuelles.
-
-        Returns:
-            tuple: (dfire_score, bb_penalty) - Énergies scalaires PyTorch.
-        """       
-        dfire_score = torch.tensor(0.0, device=self.device)
-        
-        max_dist = 19.6
-        step = 0.7
-        num_bins = self.potential_tensor.size(2)
-        # Calcul direct (on profite des 48Go de la A40)
-        p1 = current_full_coords[self.pair_i.long()]
-        p2 = current_full_coords[self.pair_j.long()]
-        
-        # Calcul des distances en une seule opération GPU
+    def calculate_detailed_scores(self, coords):
+        p1, p2 = coords[self.pair_i.long()], coords[self.pair_j.long()]
         dists = torch.norm(p1 - p2, dim=1) + 1e-8
         
-        # Interpolation DFIRE vectorisée (pas de boucle !)
         num_bins = self.potential_tensor.size(2)
         step = 0.7
         d_scaled = dists / step
         d_clamp = torch.clamp(d_scaled, 0.0, float(num_bins - 1))
-        
         d0 = torch.floor(d_clamp).long()
         d1 = torch.clamp(d0 + 1, max=num_bins - 1)
         alpha = d_clamp - d0.float()
         
-        # Extraction des énergies en masse
         energy0 = self.potential_tensor[self.t1_vals.long(), self.t2_vals.long(), d0]
         energy1 = self.potential_tensor[self.t1_vals.long(), self.t2_vals.long(), d1]
-        
         dfire_score = torch.sum(((1 - alpha) * energy0 + alpha * energy1) * (dists < 19.6).float())
 
-
-        # --- [Calcul Anti-Clash] ---
-        # On ne pénalise que si dist < min_dist_vdw
-        clash_mask = dists < self.min_dist_vdw
-        clash_penalty = torch.tensor(0.0, device=self.device)
-        
-        if clash_mask.any():
-            # Formule : force = K * (distance_minimale - distance_réelle)^2
-            # K doit être élevé pour agir comme un mur infranchissable
-            diff = self.min_dist_vdw[clash_mask] - dists[clash_mask]
-            clash_penalty = torch.tensor(1000.0, device=self.device) * torch.sum(diff**2)
-
-        # Contrainte Backbone
-        if len(self.bb_o3_idx) > 0:
-            p_o3 = current_full_coords[self.bb_o3_idx]
-            p_p = current_full_coords[self.bb_p_idx]
-            bb_dists = torch.norm(p_o3 - p_p, dim=1)
-            bb_penalty = self.backbone_weight * torch.sum((bb_dists - self.target_bb_dist)**2)
-        else:
-            bb_penalty = torch.tensor(0.0, device=self.device)
-            
+        bb_penalty, clash_penalty = self.calculate_base_penalties(coords, dists)
         return dfire_score, bb_penalty, clash_penalty
-
-    def print_metrics(self, step):
-        # --- MÉTRIQUES GPU (PyTorch) ---
-        if torch.cuda.is_available():
-            # Mémoire actuellement allouée par les tenseurs
-            gpu_alloc = torch.cuda.memory_allocated() / 1024**2  # en Mo
-            # Mémoire réservée par le cache de PyTorch
-            gpu_reserved = torch.cuda.memory_reserved() / 1024**2  # en Mo
-            gpu_name = torch.cuda.get_device_name(0)
-        else:
-            gpu_alloc, gpu_reserved, gpu_name = 0, 0, "CPU Only"
-
-        # --- MÉTRIQUES CPU & RAM (psutil) ---
-        cpu_usage = psutil.cpu_percent() # % d'utilisation CPU global
-        ram_usage = psutil.virtual_memory().percent # % RAM système
-        
-        print(f" [Métrique Ep {step}] GPU: {gpu_alloc:.1f}MB/{gpu_reserved:.1f}MB ({gpu_name}) | CPU: {cpu_usage}% | RAM: {ram_usage}%")
-
-    def run_optimization(self):
-        """
-        Exécute la boucle principale d'optimisation.
-        Utilise Adam pour minimiser loss = DFIRE + Backbone.
-        Inclut une phase de secouage (cooling/decay) entre les cycles pour éviter les minima locaux.
-        """
-        print(f"Version PyTorch : {torch.__version__}")
-        print(f"CUDA disponible : {torch.cuda.is_available()}")
-        print(f"Version CUDA de PyTorch : {torch.version.cuda}")
-        if torch.cuda.is_available():
-            print(f"Nom du GPU : {torch.cuda.get_device_name(0)}")
-        optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
-        
-        best_ref_coords = self.ref_coords.clone().detach()
-        best_rot_angles = self.rot_angles.clone().detach()
-        self.best_score = float('inf')
-
-        if self.verbose:
-            print(f"🚀 Début de l'optimisation DFIRE (Adam, {self.num_cycles} cycles de {self.epochs_per_cycle} epochs)...")
-            print(f"Nombre de paires d'atomes à traiter : {self.pair_i.size(0):,}")
-        
-        for cycle in range(self.num_cycles):
-            if self.verbose:
-                print(f"\n--- Cycle {cycle+1}/{self.num_cycles} ---")
-            
-            for step in range(self.epochs_per_cycle):
-                optimizer.zero_grad()
-                
-                coords = self.get_current_full_coords()
-                score, bb_penalty, clash_penalty = self.calculate_detailed_scores(coords)
-                loss = score + bb_penalty + clash_penalty
-                
-                loss.backward()
-                optimizer.step()
-                
-                if loss.item() < self.best_score:
-                    self.best_score = loss.item()
-                    best_ref_coords.copy_(self.ref_coords)
-                    best_rot_angles.copy_(self.rot_angles)
-                    
-                if self.verbose and (step % 100 == 0 or step == self.epochs_per_cycle - 1):
-                    #  print(f"Epoch {step:3d} | Total: {loss.item():.2f} | DFIRE: {score.item():.2f} | Backbone: {bb_penalty.item():.2f} | Clash: {clash_penalty.item():.2f}")
-                    self.print_metrics(step)
-                
-                # Nettoyage explicite pour libérer de la mémoire si nécessaire
-                del coords, score, bb_penalty, clash_penalty, loss
-            
-            # --- SHAKE ---
-            if cycle < self.num_cycles - 1:
-                decay = 1.0 - (cycle / (self.num_cycles - 1))
-                current_noise_c = self.noise_coords * decay
-                current_noise_a = self.noise_angles * decay
-                
-                with torch.no_grad():
-                    self.ref_coords.copy_(best_ref_coords)
-                    self.rot_angles.copy_(best_rot_angles)
-                    self.ref_coords.add_(torch.randn_like(self.ref_coords) * current_noise_c)
-                    self.rot_angles.add_(torch.randn_like(self.rot_angles) * current_noise_a)
-                
-                optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
-                torch.cuda.empty_cache()
-
-        if self.verbose:
-            print("\n Optimisation terminée.")
-        with torch.no_grad():
-            self.ref_coords.copy_(best_ref_coords)
-            self.rot_angles.copy_(best_rot_angles)
-            
-        self.save_optimized_pdb()
-
-    def save_optimized_pdb(self):
-        """
-        Saisie les coordonnées finales optimisées et les écrit dans un nouveau fichier PDB.
-        """
-        final_full_coords = self.get_current_full_coords().detach().cpu().numpy()
-        out_ppdb = PandasPdb()
-        out_ppdb.df['ATOM'] = self.df_filtered.copy()
-        out_ppdb.df['ATOM'][['x_coord', 'y_coord', 'z_coord']] = final_full_coords
-        out_ppdb.df["ATOM"]["chain_id"] = "A"
-        out_ppdb.to_pdb(path=self.output_path)
-        print(f"Fichier sauvegardé : {self.output_path}")
