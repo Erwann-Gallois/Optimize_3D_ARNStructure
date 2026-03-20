@@ -30,7 +30,7 @@ def main():
     parser.add_argument("--lr", type=float, default=0.2, help="Learning rate (default: 0.2)")
     parser.add_argument("--noise-coords", type=float, default=0.5, help="Noise on coordinates (default: 10.0)")
     parser.add_argument("--noise-angles", type=float, default=0.2, help="Noise on angles (default: 15.0)")
-    parser.add_argument("--verbose", action="store_true", help="Verbose output during optimization")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output during optimization")
     args = parser.parse_args()
 
     # 1. Sequence retrieval

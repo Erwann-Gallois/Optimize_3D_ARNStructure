@@ -7,9 +7,10 @@ import pandas as pd
 from biopandas.pdb import PandasPdb
 
 class RNA_RASP_Optimizer(RNA_Optimizer):
-    def __init__(self, type_RASP="all", **kwargs):
+    def __init__(self, exclusion_index = 3, type_RASP="all", **kwargs):
         super().__init__(**kwargs)
         self.type_RASP = type_RASP
+        self.exclusion_index = exclusion_index
         # 1. Chargement Potentiels
         path = f"potentials/{self.type_RASP}.nrg"
         if os.path.exists(path):
@@ -35,7 +36,7 @@ class RNA_RASP_Optimizer(RNA_Optimizer):
         i_idx, j_idx = torch.triu_indices(len(self.df_filtered), len(self.df_filtered), offset=1, device=self.device)
         res_tensor = torch.tensor(res_ids, device=self.device)
         sep = torch.abs(res_tensor[i_idx] - res_tensor[j_idx])
-        mask = sep > 3
+        mask = sep > self.exclusion_index
         self.pair_i, self.pair_j = i_idx[mask].to(torch.int32), j_idx[mask].to(torch.int32)
         self.k_vals = torch.clamp(sep[mask] - 1, 0, 5)
         self.t1_vals, self.t2_vals = atom_types[self.pair_i.long()], atom_types[self.pair_j.long()]

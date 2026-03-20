@@ -7,8 +7,9 @@ import pandas as pd
 from biopandas.pdb import PandasPdb
 
 class RNA_DFIRE_Optimizer(RNA_Optimizer):
-    def __init__(self, **kwargs):
+    def __init__(self, exclusion_index = 2, **kwargs):
         super().__init__(**kwargs)
+        self.exclusion_index = exclusion_index
         # 1. Chargement Potentiels
         path = "potentials/matrice_dfire.dat"
         if os.path.exists(path):
@@ -42,7 +43,7 @@ class RNA_DFIRE_Optimizer(RNA_Optimizer):
         atom_types = torch.tensor([self.type_to_idx[t] for t in self.df_filtered['dfire_type']], dtype=torch.int32, device=self.device)
         res_ids = self.df_filtered['residue_number'].values
         i_idx, j_idx = torch.triu_indices(len(self.df_filtered), len(self.df_filtered), offset=1, device=self.device)
-        mask = torch.abs(torch.tensor(res_ids, device=self.device)[i_idx] - torch.tensor(res_ids, device=self.device)[j_idx]) > 2
+        mask = torch.abs(torch.tensor(res_ids, device=self.device)[i_idx] - torch.tensor(res_ids, device=self.device)[j_idx]) > self.exclusion_index
         self.pair_i, self.pair_j = i_idx[mask].to(torch.int32), j_idx[mask].to(torch.int32)
         self.t1_vals, self.t2_vals = atom_types[self.pair_i.long()], atom_types[self.pair_j.long()]
         self.min_dist_vdw = (self.vdw_radii_all[self.pair_i.long()] + self.vdw_radii_all[self.pair_j.long()]) * 0.85
