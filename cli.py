@@ -7,7 +7,7 @@ import time
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "classe"))
 
-from fonction import read_fasta_file, generer_arn_droit, enlever_hydrogene, fix_amber_pdb
+from fonction import read_fasta_file, generer_first_structure
 from RNA_RASP_Optimizer import RNA_RASP_Optimizer
 from RNA_DFIRE_Optimizer import RNA_DFIRE_Optimizer
 
@@ -30,9 +30,7 @@ def main():
     parser.add_argument("--lr", type=float, default=0.2, help="Learning rate (default: 0.2)")
     parser.add_argument("--noise-coords", type=float, default=0.5, help="Noise on coordinates (default: 10.0)")
     parser.add_argument("--noise-angles", type=float, default=0.2, help="Noise on angles (default: 15.0)")
-    parser.add_argument("--backbone-weight", type=float, default=10.0, help="Backbone weight (default: 100.0)")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
-
+    parser.add_argument("--verbose", action="store_true", help="Verbose output during optimization")
     args = parser.parse_args()
 
     # 1. Sequence retrieval
@@ -56,19 +54,15 @@ def main():
     os.makedirs("resultat", exist_ok=True)
     
     initial_pdb = f"fichier_arn/initial_{int(time.time())}.pdb"
-    initial_pdb_fix = f"fichier_arn/initial_{int(time.time())}_fixed.pdb"
-    initial_pdb_no_h = initial_pdb.replace(".pdb", "_no_h.pdb")
+    generer_first_structure(sequence, initial_pdb)
     
     print("Generating initial straight structure...")
-    generer_arn_droit(sequence, initial_pdb)
-    fix_amber_pdb(initial_pdb, initial_pdb_fix)  # Fix any potential issues with the generated PDB
     
-    if not os.path.exists(initial_pdb_fix):
+    
+    if not os.path.exists(initial_pdb):
         print("Error: Initial structure could not be generated.")
         sys.exit(1)
         
-    print("Removing hydrogens...")
-    enlever_hydrogene(initial_pdb_fix, initial_pdb_no_h)
 
 
     # 3. Optimizer selection
@@ -94,7 +88,7 @@ def main():
     # Unified call for full-atom optimizers
     # Passing everything as named arguments for Clarity
     opt = OptClass(
-        pdb_path=initial_pdb_no_h,
+        pdb_path=initial_pdb,
         epochs_per_cycle=args.epochs,
         lr=args.lr,
         output_path=output_path,
@@ -102,7 +96,7 @@ def main():
         num_cycles=args.cycles,
         noise_coords=args.noise_coords,
         noise_angles=args.noise_angles,
-        backbone_weight=args.backbone_weight,
+        backbone_weight=int(len(sequence) * 2),
         verbose=args.verbose
     )
 

@@ -51,16 +51,20 @@ class RNA_DFIRE_Optimizer(RNA_Optimizer):
         p1, p2 = coords[self.pair_i.long()], coords[self.pair_j.long()]
         dists = torch.norm(p1 - p2, dim=1) + 1e-8
         
+        # Vectorisation massive de l'interpolation DFIRE
         num_bins = self.potential_tensor.size(2)
         step = 0.7
         d_scaled = dists / step
         d_clamp = torch.clamp(d_scaled, 0.0, float(num_bins - 1))
-        d0 = torch.floor(d_clamp).long()
+        d0 = d_clamp.long()
         d1 = torch.clamp(d0 + 1, max=num_bins - 1)
-        alpha = d_clamp - d0.float()
+        alpha = (d_clamp - d0.float())
         
+        # Extraction par batch des énergies
         energy0 = self.potential_tensor[self.t1_vals.long(), self.t2_vals.long(), d0]
         energy1 = self.potential_tensor[self.t1_vals.long(), self.t2_vals.long(), d1]
+        
+        # Calcul de l'énergie finale avec masque de distance 19.6A (limite DFIRE)
         dfire_score = torch.sum(((1 - alpha) * energy0 + alpha * energy1) * (dists < 19.6).float())
 
         bb_penalty, clash_penalty = self.calculate_base_penalties(coords, dists)

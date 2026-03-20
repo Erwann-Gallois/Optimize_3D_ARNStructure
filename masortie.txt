@@ -1,0 +1,20 @@
+/home/egallois/miniconda3/envs/Stage/lib/python3.10/site-packages/biopandas/pdb/pandas_pdb.py:732: UserWarning: Column rasp_type is not an expected column and will be skipped.
+  warn(
+Sequence loaded (155 nuc): GGUGCCAGGUAACGCCUGGGCGGGGUAACCCGACGGAAAGUGCCACAGAG...
+Generate the first 3D structure
+Génération de la structure pour la séquence (155 nuc) : GGUGCCAGGUAACGCCUGGGCGGGGUAACCCGACGGAAAGUGCCACAGAG...
+✅ Succès ! Le fichier 'fichier_arn/initial_1773995033.pdb' a été créé.
+OP3 ajouté au résidu G 1
+The structure was been generated
+Generating initial straight structure...
+Initializing rasp optimizer (full atoms)...
+
+--- Starting optimization ---
+Device used for optimization: cuda
+
+✅ Optimisation terminée.
+Fichier sauvegardé : resultat/optimized_rasp_1773995034.pdb | Meilleur score : -4223.44
+--- Optimization finished ---
+Best score obtained: -4223.43603515625
+Result saved in: resultat/optimized_rasp_1773995034.pdb
+Execution time: 109.28 seconds

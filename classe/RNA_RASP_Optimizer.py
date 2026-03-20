@@ -26,6 +26,8 @@ class RNA_RASP_Optimizer(RNA_Optimizer):
         
         self.prepare_rigid_structure(self.df_filtered)
         self._setup_rasp_pairs()
+        self.potential_tensor = self.potential_tensor.detach()
+        self.potential_tensor.requires_grad = False
 
     def _setup_rasp_pairs(self):
         atom_types = torch.tensor(self.df_filtered['rasp_type'].values, dtype=torch.long, device=self.device)
@@ -37,19 +39,25 @@ class RNA_RASP_Optimizer(RNA_Optimizer):
         self.pair_i, self.pair_j = i_idx[mask].to(torch.int32), j_idx[mask].to(torch.int32)
         self.k_vals = torch.clamp(sep[mask] - 1, 0, 5)
         self.t1_vals, self.t2_vals = atom_types[self.pair_i.long()], atom_types[self.pair_j.long()]
-        self.min_dist_vdw = (self.vdw_radii_all[self.pair_i.long()] + self.vdw_radii_all[self.pair_j.long()]) * 0.85
+        self.min_dist_vdw = ((self.vdw_radii_all[self.pair_i.long()] + 
+                     self.vdw_radii_all[self.pair_j.long()]) * 0.85).detach()
 
     def calculate_detailed_scores(self, coords):
         p1, p2 = coords[self.pair_i.long()], coords[self.pair_j.long()]
         dists = torch.norm(p1 - p2, dim=1) + 1e-8
         
+        # Vectorisation massive de l'interpolation RASP
         max_dist_idx = self.potential_tensor.size(3) - 1
         d_clamp = torch.clamp(dists, 0.0, float(max_dist_idx)) 
-        d0, alpha = torch.floor(d_clamp).long(), d_clamp - torch.floor(d_clamp)
+        d0 = torch.floor(d_clamp).long()
+        alpha = d_clamp - d0.float()
         d1 = torch.clamp(d0 + 1, max=max_dist_idx)
         
+        # Extraction par batch des énergies
         energy0 = self.potential_tensor[self.k_vals, self.t1_vals, self.t2_vals, d0]
         energy1 = self.potential_tensor[self.k_vals, self.t1_vals, self.t2_vals, d1]
+        
+        # Calcul de l'énergie finale avec masque de distance maximale
         rasp_score = torch.sum(((1 - alpha) * energy0 + alpha * energy1) * (dists < float(max_dist_idx)).float())
 
         bb_penalty, clash_penalty = self.calculate_base_penalties(coords, dists)

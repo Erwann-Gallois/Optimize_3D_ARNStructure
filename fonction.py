@@ -55,6 +55,18 @@ def generer_arn_droit(sequence, fichier_sortie="arn_structure.pdb"):
         
         # Construire chaque morceau de la séquence
         noms_parties = []
+        for i, chunk in enumerate(chunks):taille_chunk = 50
+    chunks = [sequence[i:i + taille_chunk] for i in range(0, len(sequence), taille_chunk)]
+    
+    script_tleap = "instructions_tleap.in"
+    
+    # 2. Créer le script d'instructions que l'on passera à tleap
+    with open(script_tleap, "w") as f:
+        # Charger le champ de force pour l'ARN (OL3 est le standard très recommandé)
+        f.write("source leaprc.RNA.OL3\n")
+        
+        # Construire chaque morceau de la séquence
+        noms_parties = []
         for i, chunk in enumerate(chunks):
             chunk_formatee = " ".join([nuc.upper() for nuc in chunk])
             nom_partie = f"partie_{i}"
@@ -143,9 +155,16 @@ def fix_amber_pdb(input_pdb, output_pdb):
                     )
                     
                     first_residue.add(op3)
-                    print(f"✅ OP3 ajouté au résidu {first_residue.get_resname()} {first_residue.id[1]}")
+                    print(f"OP3 ajouté au résidu {first_residue.get_resname()} {first_residue.id[1]}")
 
     # Réécriture propre du fichier
     io = PDBIO()
     io.set_structure(structure)
     io.save(output_pdb)
+
+def generer_first_structure(sequence, fichier_sortie="arn_structure.pdb"):
+    print('Generate the first 3D structure')
+    generer_arn_droit(sequence, fichier_sortie)
+    enlever_hydrogene(fichier_sortie, fichier_sortie)
+    fix_amber_pdb(fichier_sortie, fichier_sortie)
+    print("The structure was been generated")
