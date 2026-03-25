@@ -1,0 +1,110 @@
+import os
+import requests
+import time
+from Bio.PDB import PDBList
+
+# --- CONFIGURATION ---
+RESOLUTION_MAX = 1.1 
+DOSSIER_CIBLE = "dataset"
+FORMAT_FICHIER = "mmCif"  # 'mmCif' ou 'pdb'
+PAGE_SIZE = 100 
+
+def chercher_tous_rna_ids(res_limit):
+    """Cherche TOUS les IDs en gérant la pagination de l'API RCSB."""
+    print(f"--- Recherche de toutes les structures (Résolution < {res_limit}Å) ---")
+    url = "https://search.rcsb.org/rcsbsearch/v2/query"
+    all_ids = []
+    start = 0
+    total_count = 1 
+
+    while start < total_count:
+        query = {
+            "query": {
+                "type": "group",
+                "logical_operator": "and",
+                "nodes": [
+                    {
+                        "type": "terminal",
+                        "service": "text",
+                        "parameters": {
+                            "attribute": "rcsb_entry_info.resolution_combined",
+                            "operator": "less",
+                            "value": res_limit
+                        }
+                    },
+                    {
+                        "type": "terminal",
+                        "service": "text",
+                        "parameters": {
+                            "attribute": "struct_keywords.pdbx_keywords",
+                            "operator": "contains_phrase",
+                            "value": "RNA"
+                        }
+                    }
+                ]
+            },
+            "return_type": "entry",
+            "request_options": {
+                "paginate": {"start": start, "rows": PAGE_SIZE},
+                "results_content_type": ["experimental"],
+                "sort": [{"sort_by": "score", "direction": "desc"}]
+            }
+        }
+
+        response = requests.post(url, json=query)
+        if response.status_code == 200:
+            data = response.json()
+            total_count = data.get('total_count', 0)
+            ids = [res['identifier'] for res in data.get('result_set', [])]
+            all_ids.extend(ids)
+            print(f"[{len(all_ids)}/{total_count}] Identifiants récupérés...")
+            start += PAGE_SIZE
+        else:
+            print(f"Erreur API : {response.status_code}")
+            break
+    return all_ids
+
+def telecharger_si_absent(pdb_ids, folder, file_format, need_sleep=False):
+    """Télécharge les fichiers uniquement s'ils ne sont pas déjà présents."""
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+
+    pdbl = PDBList()
+    extensions = {"mmCif": ".cif", "pdb": ".pdb"}
+    ext = extensions.get(file_format, ".cif")
+    
+    deja_presents = 0
+    a_telecharger = []
+
+    # 1. Analyse préalable du dossier
+    for pdb_id in pdb_ids:
+        # Biopython nomme souvent les fichiers en minuscule : 1abc.cif
+        filename = f"{pdb_id.lower()}{ext}"
+        filepath = os.path.join(folder, filename)
+        
+        if os.path.exists(filepath):
+            deja_presents += 1
+        else:
+            a_telecharger.append(pdb_id)
+
+    print(f"\nStatistiques du dossier :")
+    print(f"  - Déjà présents : {deja_presents}")
+    print(f"  - À télécharger : {len(a_telecharger)}")
+
+    # 2. Téléchargement effectif
+    if not a_telecharger:
+        print("Tout est déjà à jour !")
+        return
+
+    for i, pdb_id in enumerate(a_telecharger):
+        print(f"[{i+1}/{len(a_telecharger)}] Téléchargement de {pdb_id}...")
+        # flat=True évite la création de sous-répertoires bizarres
+        pdbl.retrieve_pdb_file(pdb_id, pdir=folder, file_format=file_format)
+        if need_sleep:
+            time.sleep(1)
+
+# --- EXÉCUTION ---
+if __name__ == "__main__":
+    ids = chercher_tous_rna_ids(RESOLUTION_MAX)
+    if ids:
+        telecharger_si_absent(ids, DOSSIER_CIBLE, FORMAT_FICHIER, need_sleep=False)
