@@ -3,6 +3,18 @@ import requests
 import time
 from Bio.PDB import PDBList
 
+def main():
+    parser = argparse.ArgumentParser(description="CLI interface for extracting atom distances from RNA structures.")
+    parser.add_argument("-f", "--folder_path", help="Path to the folder containing CIF files.")
+    parser.add_argument("-r", "--resolution", default=1.1, type=float, help="Maximum resolution for filtering structures.")
+    parser.add_argument("-p", "--page", default=100, type=int, help="Number of structures to retrieve per page.")
+    parser.add_argument("-e", "--extension", default="mmCif", choices=["mmCif", "pdb"], help="File format to download (mmCif or pdb).")
+    args = parser.parse_args()
+    ids = chercher_tous_rna_ids(args.resolution, args.page)
+    if ids:
+        telecharger_si_absent(ids, args.folder_path, args.extension, need_sleep=False)
+
+
 # --- CONFIGURATION ---
 RESOLUTION_MAX = 1.1 
 DOSSIER_CIBLE = "dataset"
