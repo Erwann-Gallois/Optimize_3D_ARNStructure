@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from biopandas.pdb import PandasPdb
 import nglview as nv
 from Bio import SeqIO
-from Bio.PDB import PDBParser, PDBIO, Atom
+from Bio.PDB import PDBParser, PDBIO, Atom, MMCIFIO
 import sys
 
 def view_structure(file_pdb):
@@ -30,7 +30,6 @@ def enlever_hydrogene(file_pdb, output_file_pdb):
     ppdb_df =  PandasPdb().read_pdb(file_pdb)
     atom_df = ppdb_df.df["ATOM"]
     atom_sans_h_df = atom_df[~atom_df["atom_name"].str.startswith("H")]
-    atom_sans_h_df.head(20)
     ppdb_df.df['ATOM'] = atom_sans_h_df
     ppdb_df.to_pdb(output_file_pdb)
 
@@ -168,3 +167,35 @@ def generer_first_structure(sequence, fichier_sortie="arn_structure.pdb"):
     enlever_hydrogene(fichier_sortie, fichier_sortie)
     fix_amber_pdb(fichier_sortie, fichier_sortie)
     print("The structure was been generated")
+
+def pandaspdb_vers_cif(ppdb_obj, nom_sortie):
+    # 1. Remplir les colonnes manquantes ou problématiques pour le format CIF
+    # Le format CIF nécessite souvent des valeurs explicites pour asym_id et entity_id
+    if 'chain_id' in ppdb_obj.df['ATOM'].columns:
+        # Biopython utilise 'label_asym_id' et 'label_entity_id' dans le CIF
+        # On s'assure que chain_id n'est pas vide
+        ppdb_obj.df['ATOM']['chain_id'] = ppdb_obj.df['ATOM']['chain_id'].replace('', 'A').fillna('A')
+    
+    # 2. Sauvegarder l'objet PandasPdb en fichier temporaire
+    temp_pdb = "temp_transformation.pdb"
+    ppdb_obj.to_pdb(temp_pdb)
+    
+    # 3. Utiliser Biopython pour lire ce fichier
+    parser = PDBParser(QUIET=True)
+    structure = parser.get_structure("RNA", temp_pdb)
+    
+    # 4. Parcourir la structure pour s'assurer que les champs sont remplis
+    for model in structure:
+        for chain in model:
+            # Force l'ID de la chaîne s'il est vide ou par défaut
+            if not chain.id or chain.id == ' ':
+                chain.id = 'A'
+    
+    # 5. Sauvegarder en mmCIF
+    io = MMCIFIO()
+    io.set_structure(structure)
+    io.save(nom_sortie)
+    
+    # 6. Nettoyage du fichier temporaire
+    if os.path.exists(temp_pdb):
+        os.remove(temp_pdb)

@@ -2,6 +2,7 @@ import os
 import requests
 import time
 from Bio.PDB import PDBList
+import argparse
 
 def main():
     parser = argparse.ArgumentParser(description="CLI interface for extracting atom distances from RNA structures.")

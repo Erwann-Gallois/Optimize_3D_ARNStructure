@@ -13,12 +13,12 @@ def main():
     parser.add_argument("-f", "--folder_path", help="Path to the folder containing CIF files.")
     parser.add_argument("-o", "--output_path", default="distances.csv", help="Path to the output CSV file.")
     parser.add_argument("--ref_atom_name", default="C3'", help="Name of the reference atom.")
-
+    parser.add_argument("--visualize", action="store_true", help="Whether to visualize the distribution of distances.")
+    parser.add_argument("--export", action="store_true", help="Whether to export the distances to a CSV file.")
     args = parser.parse_args()
-    extract_ref_atom_distance(args.folder_path, args.output_path, args.ref_atom_name)
-    visualise_distribution(args.output_path, args.ref_atom_name)
+    extract_ref_atom_distance(args.folder_path, args.output_path, args.ref_atom_name, args.export, args.visualize)
 
-def extract_ref_atom_distance(folder_path, file_path, ref_atom_name="C3'"):   
+def extract_ref_atom_distance(folder_path, file_path, ref_atom_name="C3'", export_csv=False, visualize=False):   
     parser = MMCIFParser(QUIET=True)
     distances = []
     
@@ -54,11 +54,23 @@ def extract_ref_atom_distance(folder_path, file_path, ref_atom_name="C3'"):
         return
         
     df = pd.DataFrame(distances, columns=['Distance'])
-    df.to_csv(file_path, index=False)
-    print(f"Extraction terminée : {len(distances)} distances consécutives sauvegardées.")
+    
+    if export_csv:
+        df.to_csv(file_path, index=False)
+        print(f"Distances extraites et sauvegardées dans {file_path}.")
+    
+    if visualize:
+        visualise_distribution(df, ref_atom_name, export=export_csv)
 
-def visualise_distribution(file_path, ref_atom_name="C3'"):
-    df = pd.read_csv(file_path) 
+    mean = df['Distance'].mean()
+    std = df['Distance'].std()
+    print(f"Distance moyenne : {mean:.3f} Å")
+    print(f"Écart-type : {std:.3f} Å")
+    
+    return mean, std
+
+def visualise_distribution(df, ref_atom_name="C3'", export = False):
+    # df = pd.read_csv(file_path) 
     data = df['Distance']
 
     # 2. Calcul des paramètres statistiques
@@ -87,7 +99,9 @@ def visualise_distribution(file_path, ref_atom_name="C3'"):
     plt.grid(axis='y', alpha=0.3)
 
     # 4. Sauvegarde
-    plt.savefig(f"distribution_{ref_atom_name}.png", dpi=300)
+    if export:
+        plt.savefig(f"distribution_{ref_atom_name}.png", dpi=300)
+    
     plt.show()
 
 if __name__ == "__main__":
