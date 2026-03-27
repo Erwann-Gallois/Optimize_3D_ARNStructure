@@ -4,11 +4,15 @@ import torch
 
 @dataclass
 class ModelContext:
-    """Conteneur pour passer l'état courant du modèle aux fonctions de score."""
-    coords: torch.Tensor          # (N, 3)
-    res_ids: torch.Tensor         # (N,) ID de résidu pour chaque atome/bille
-    atom_names: Optional[List[str]] = None
-    res_names: Optional[List[str]] = None
-    dist_matrix: Optional[torch.Tensor] = None
-    pairwise_dists: Optional[torch.Tensor] = None
-    dists_adj: Optional[torch.Tensor] = None
+    """
+    Conteneur de données (Data Class) pour passer l'état courant du modèle, 
+    tel que les coordonnées et d'autres informations géométriques,
+    aux fonctions de score (comme DFIRE ou RASP) lors de l'optimisation.
+    """
+    coords: torch.Tensor          # Tenseur (N, 3) contenant les coordonnées XYZ des atomes/billes
+    res_ids: torch.Tensor         # Tenseur (N,) contenant l'ID de résidu (ou numéro) pour chaque atome/bille
+    atom_names: Optional[List[str]] = None      # Liste optionnelle des noms des atomes
+    res_names: Optional[List[str]] = None       # Liste optionnelle des noms des résidus (ex: A, U, G, C)
+    dist_matrix: Optional[torch.Tensor] = None  # Matrice complète de distance (N, N)
+    pairwise_dists: Optional[torch.Tensor] = None # Distances des paires extraites (selon les indices triu)
+    dists_adj: Optional[torch.Tensor] = None    # Distances linéaires entre éléments adjacents (i.e. i et i+1)

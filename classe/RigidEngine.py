@@ -1,22 +1,46 @@
 import torch
 import numpy as np
-import classe.BaseEngine as BaseEngine
-import classe.ModelContext as ModelContext
+from classe.BaseEngine import BaseEngine
+from classe.ModelContext import ModelContext
 from biopandas.pdb import PandasPdb
 
 
 class RigidEngine(BaseEngine):
+    """
+    Moteur d'optimisation basé sur des "corps rigides".
+    Plutôt que d'optimiser les atomes indépendamment de manière libre, ce moteur
+    préserve la géométrie locale (rigide) de chaque nucléotide, et optimise
+    uniquement leurs translations et rotations globales dans l'espace.
+    Cela préserve les géométries internes des bases tout en permettant l'assemblage 3D.
+    """
     def __init__(self, pdb_path: str, ref_atom: str = "C3'", 
-                 backbone_weight: float = 100.0, clash_weight: float = 50.0, **kwargs):
+                 backbone_weight: float = 100.0, clash_weight: float = 50.0, noise_angles : float = 0.5, noise_coords : float = 1.5, **kwargs):
+        """
+        Initialise le moteur à corps rigides à partir d'un fichier PDB.
+        
+        Args:
+            pdb_path: Chemin vers le fichier PDB initial.
+            ref_atom: Atome de référence servant de centre de rotation (ex: C3').
+            backbone_weight: Poids multiplicateur pour la fermeture du squelette.
+            clash_weight: Poids des pénalités stériques (répulsion de van der Waals).
+            **kwargs: Arguments passés au BaseEngine.
+        """
         super().__init__(**kwargs)
         self.pdb_path = pdb_path
         self.ref_atom = ref_atom
         self.backbone_weight = backbone_weight
         self.clash_weight = clash_weight
+        self.noise_angles = noise_angles
+        self.noise_coords = noise_coords
         self._prepare_structure()
         self._setup_backbone_constraints()
 
     def _prepare_structure(self):
+        """
+        Extrait les coordonnées du fichier PDB originel et les décompose
+        en centres de référence (par résidu) et en vecteurs de décalages (offsets) fixes
+        pour chaque atome de ce même résidu.
+        """
         ppdb = PandasPdb().read_pdb(self.pdb_path)
         df = ppdb.df['ATOM'].copy()
         
@@ -43,10 +67,14 @@ class RigidEngine(BaseEngine):
                                       for n in df['atom_name'].values], device=self.device)
 
     def _setup_backbone_constraints(self):
-        """Identifie les indices pour le Backbone (O3-P, P-P et l'angle C3-O3-P)."""
+        """
+        Identifie les indices (positions des atomes dans les tenseurs) pour pénaliser 
+        ultérieurement les déformations du Backbone de l'ARN (i.e., la chaîne principale O3'-P(next), 
+        la distance P(curr)-P(next), et l'angle C3'-O3'-P(next)).
+        """
         self.bb_indices = {
-            "o3": [], "p_next": [],  # Pour O3' - P(next)
-            "p_curr": [],            # Pour P(curr) - P(next)
+            "o3": [], "p_next": [],  # Pour la distance de la liaison covalente O3' - P(next)
+            "p_curr": [],            # Pour la distance P(curr) - P(next)
             "c3": []                 # Pour l'angle C3' - O3' - P(next)
         }
         
@@ -80,6 +108,11 @@ class RigidEngine(BaseEngine):
             self.bb_indices[k] = torch.tensor(self.bb_indices[k], dtype=torch.long, device=self.device)
 
     def get_rotation_matrices(self):
+        """
+        Construit et retourne les matrices de rotation 3D complètes (Rz * Ry * Rx) 
+        pour chaque corps rigide en fonction de leurs paramètres d'angles (d'Euler) optimisés
+        (alpha, beta, gamma).
+        """
         cos_a, sin_a = torch.cos(self.rot_angles[:, 0]), torch.sin(self.rot_angles[:, 0])
         cos_b, sin_b = torch.cos(self.rot_angles[:, 1]), torch.sin(self.rot_angles[:, 1])
         cos_g, sin_g = torch.cos(self.rot_angles[:, 2]), torch.sin(self.rot_angles[:, 2])
@@ -92,6 +125,11 @@ class RigidEngine(BaseEngine):
         return torch.bmm(Rz, torch.bmm(Ry, Rx))
 
     def get_context(self) -> ModelContext:
+        """
+        Assemble les coordonnées absolues actualisées de l'ensemble des atomes du modèle.
+        Il applique la matrice de rotation courante suivie du vecteur de translation actuel 
+        (le centre de référence optimisé).
+        """
         R = self.get_rotation_matrices()[self.atom_to_nuc_idx]
         rotated_offsets = torch.bmm(R, self.offsets.unsqueeze(2)).squeeze(2)
         curr_coords = self.ref_coords[self.atom_to_nuc_idx] + rotated_offsets
@@ -103,29 +141,41 @@ class RigidEngine(BaseEngine):
         )
 
     def calculate_physical_penalties(self, ctx: ModelContext):
+        """
+        Évalue toutes les contraintes de nature "physique" pour contraindre le modèle à avoir
+        des longueurs et angles de liaison physiquement réalistes aux articulations.
+        """
         penalty = torch.tensor(0.0, device=self.device)
         
-        # 1. Clashes Stériques
+        # 1. Clashes Stériques : Pénalise fortement deux atomes qui se superposent (plus proches que vdw_radii)
         dist_mat = torch.cdist(ctx.coords, ctx.coords)
         i, j = torch.triu_indices(len(ctx.coords), len(ctx.coords), offset=1, device=self.device)
-        dists = dist_mat[i, j]
-        thresholds = (self.vdw_radii[i] + self.vdw_radii[j]) * 0.85
-        penalty += torch.sum(torch.clamp(thresholds - dists, min=0.0)**2) * self.clash_weight
         
+        # Exclure les atomes du même nucléotide car ils sont fixes (corps rigide)
+        mask_diff_res = self.atom_to_nuc_idx[i] != self.atom_to_nuc_idx[j]
+        i_filtered = i[mask_diff_res]
+        j_filtered = j[mask_diff_res]
+        
+        dists = dist_mat[i_filtered, j_filtered]
+        thresholds = (self.vdw_radii[i_filtered] + self.vdw_radii[j_filtered]) * 0.85
+        clash_penalty = torch.sum(torch.clamp(thresholds - dists, min=0.0)**2) * self.clash_weight
+        penalty += clash_penalty
+        
+        bb_penalty = torch.tensor(0.0, device=self.device)
         # 2. Backbone
         # O3' - P(next)
         if len(self.bb_indices["o3"]) > 0:
             p_o3 = ctx.coords[self.bb_indices["o3"]]
             p_pn = ctx.coords[self.bb_indices["p_next"]]
             d_o3p = torch.norm(p_o3 - p_pn, dim=1)
-            penalty += torch.sum((d_o3p - 1.61)**2) * self.backbone_weight
+            bb_penalty += torch.sum((d_o3p - 1.61)**2) * self.backbone_weight
             
             # Angle C3' - O3' - P(next)
             if len(self.bb_indices["c3"]) > 0:
                 p_c3 = ctx.coords[self.bb_indices["c3"]]
                 v1, v2 = p_c3 - p_o3, p_pn - p_o3
                 cos_ang = torch.sum(v1*v2, dim=1) / (torch.norm(v1, dim=1)*torch.norm(v2, dim=1) + 1e-8)
-                penalty += torch.sum((cos_ang - (-0.5))**2) * 20.0 # Poids fixe pour l'angle
+                bb_penalty += torch.sum((cos_ang - (-0.5))**2) * 20.0 # Poids fixe pour l'angle
         
         # P(curr) - P(next)
         if len(self.bb_indices["p_curr"]) > 0:
@@ -134,11 +184,12 @@ class RigidEngine(BaseEngine):
             p_pc = ctx.coords[self.bb_indices["p_curr"]]
             p_pn_dist = ctx.coords[self.bb_indices["p_next"][:len(p_pc)]] # Hypothèse de correspondance
             d_pp = torch.norm(p_pc - p_pn_dist, dim=1)
-            penalty += torch.sum((d_pp - 5.9)**2) * (self.backbone_weight * 0.5)
+            bb_penalty += torch.sum((d_pp - 5.9)**2) * (self.backbone_weight * 0.5)
             
-        return penalty
+        penalty += bb_penalty
+        return penalty, clash_penalty, bb_penalty
 
-    def save_optimized_pdb(self, output_path: str = "output_optimized.pdb") -> Tuple[PandasPdb, float]:
+    def save_optimized_pdb(self, output_path: str = "output_optimized.pdb"):
         """Exporte l'état courant dans un fichier PDB via biopandas."""
         final_coords = self.get_context().coords.detach().cpu().numpy()
         out_ppdb = PandasPdb()
@@ -149,6 +200,20 @@ class RigidEngine(BaseEngine):
         return out_ppdb, self.best_score
 
     def run_optimization(self, num_cycles=5, epochs=100, lr=0.2, noise_coords=1.5):
+        """
+        Boucle d'optimisation via l'algorithme Adam. Minimise l'énergie globale composée 
+        du score statistique et des pénalités physiques.
+        Intègre une approche rudimentaire de Simulated Annealing entre les cycles
+        en perturbant fortement, puis de moins en moins, les positions de référence pour s'échapper
+        des minimums locaux d'énergie.
+        
+        Args:
+            num_cycles: Le nombre de fois que le processus de refroidissement démarre.
+            epochs: Le nombre de pas de l'optimiseur par cycle.
+            lr: Pas d'apprentissage de base pour l'algorithme Adam.
+            noise_coords: Amplitude maximale du bruit blanc de perturbation à inter-cycle.
+        """
+        # On optimise à la fois le centre de masse (translations) et les rotations pour chaque corps (nucléotide)
         optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=lr)
         best_ref = self.ref_coords.clone().detach()
         best_rot = self.rot_angles.clone().detach()
@@ -158,7 +223,7 @@ class RigidEngine(BaseEngine):
                 optimizer.zero_grad()
                 ctx = self.get_context()
                 bio_loss = self.calculate_total_loss(ctx)
-                phys_loss = self.calculate_physical_penalties(ctx)
+                phys_loss, clash_loss, bb_loss = self.calculate_physical_penalties(ctx)
                 loss = bio_loss + phys_loss
                 loss.backward()
                 optimizer.step()
@@ -168,12 +233,15 @@ class RigidEngine(BaseEngine):
                     best_ref.copy_(self.ref_coords); best_rot.copy_(self.rot_angles)
                 
                 if step % 50 == 0 and self.verbose:
-                    print(f"Cycle {cycle+1} | Step {step} | Loss: {loss.item():.2f}")
+                    print(f"Cycle {cycle+1} | Step {step} | Loss: {loss.item():.2f} | Bio: {bio_loss.item():.2f} | Backbone: {bb_loss.item():.2f} | Clash: {clash_loss.item():.2f}")
 
             if cycle < num_cycles - 1:
+                decay = 1.0 - (cycle / num_cycles)
+                if self.verbose: print(f"  [!] SHAKE: Injection de bruit (decay={decay:.2f})")
                 with torch.no_grad():
-                    self.ref_coords.add_(torch.randn_like(self.ref_coords) * noise_coords * (1-cycle/num_cycles))
-
+                    self.ref_coords.copy_(best_ref + torch.randn_like(best_ref) * self.noise_coords * decay)
+                    self.rot_angles.copy_(best_rot + torch.randn_like(best_rot) * self.noise_angles * decay)
+                optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=lr)
         with torch.no_grad():
             self.ref_coords.copy_(best_ref); self.rot_angles.copy_(best_rot)
         return self.save_optimized_pdb()

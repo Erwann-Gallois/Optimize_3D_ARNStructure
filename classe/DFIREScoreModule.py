@@ -3,12 +3,27 @@ import classe.ModelContext as ModelContext
 from parse_dfire_potentials import load_dfire_potentials, get_dfire_type
 
 class DFIREScoreModule(torch.nn.Module):
+    """
+    Module PyTorch encapsulant la fonction de score statitisque DFIRE 
+    (modèle de potentiel d'énergie découlant des distances inter-atomiques observées en banque).
+    Utilisé pour évaluer la fiabilité/qualité d'une conformation d'ARN.
+    """
     def __init__(self, potential_path: str, nbre_nt_exclu: int = 2):
+        """
+        Args:
+            potential_path: Chemin vers le fichier brut d'énergies (.pot) DFIRE.
+            nbre_nt_exclu: Nombre de positions successives dans la séquence pour esquiver le calcul
+                           (les atomes des nucléotides < i+N n'interagissent pas dans ce score).
+        """
         super().__init__()
         self.nbre_nt_exclu = nbre_nt_exclu
         self._load_potential(potential_path)
 
     def _load_potential(self, path):
+        """
+        Charge et parse la table d'énergie pour la stocker dans un tenseur mémoire statique 
+        structuré en dimension (Type_i, Type_j, Bin_Distance), accélérant ainsi le processus.
+        """
         dict_pots = load_dfire_potentials(path)
         all_types = sorted(list(set(t for pair in dict_pots.keys() for t in pair)))
         self.type_to_idx = {t: i for i, t in enumerate(all_types)}
@@ -21,6 +36,11 @@ class DFIREScoreModule(torch.nn.Module):
         self.get_type_fn = get_dfire_type
 
     def forward(self, ctx: ModelContext) -> torch.Tensor:
+        """
+        Implémente le calcul vectoriel massivement parallèle du score DFIRE global,
+        en identifiant de quelles paires d'atomes il s'agit, et en interpolant la valeur 
+        sur la distance continue des billes de contexte (ctx).
+        """
         types = [self.get_type_fn(an, rn) for an, rn in zip(ctx.atom_names, ctx.res_names)]
         type_indices = torch.tensor([self.type_to_idx.get(t, -1) for t in types], device=ctx.coords.device)
         n = len(ctx.coords)

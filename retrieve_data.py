@@ -3,6 +3,7 @@ import requests
 import time
 from Bio.PDB import PDBList
 import argparse
+from scipy import stats
 
 def main():
     parser = argparse.ArgumentParser(description="CLI interface for extracting atom distances from RNA structures.")
@@ -17,12 +18,7 @@ def main():
 
 
 # --- CONFIGURATION ---
-RESOLUTION_MAX = 1.1 
-DOSSIER_CIBLE = "dataset"
-FORMAT_FICHIER = "mmCif"  # 'mmCif' ou 'pdb'
-PAGE_SIZE = 100 
-
-def chercher_tous_rna_ids(res_limit):
+def chercher_tous_rna_ids(res_limit, page):
     """Cherche TOUS les IDs en gérant la pagination de l'API RCSB."""
     print(f"--- Recherche de toutes les structures (Résolution < {res_limit}Å) ---")
     url = "https://search.rcsb.org/rcsbsearch/v2/query"
@@ -58,7 +54,7 @@ def chercher_tous_rna_ids(res_limit):
             },
             "return_type": "entry",
             "request_options": {
-                "paginate": {"start": start, "rows": PAGE_SIZE},
+                "paginate": {"start": start, "rows": page},
                 "results_content_type": ["experimental"],
                 "sort": [{"sort_by": "score", "direction": "desc"}]
             }
@@ -71,13 +67,13 @@ def chercher_tous_rna_ids(res_limit):
             ids = [res['identifier'] for res in data.get('result_set', [])]
             all_ids.extend(ids)
             print(f"[{len(all_ids)}/{total_count}] Identifiants récupérés...")
-            start += PAGE_SIZE
+            start += page
         else:
             print(f"Erreur API : {response.status_code}")
             break
     return all_ids
 
-def telecharger_si_absent(pdb_ids, folder, file_format, need_sleep=False):
+def telecharger_si_absent(pdb_ids, folder, file_format, need_sleep=True):
     """Télécharge les fichiers uniquement s'ils ne sont pas déjà présents."""
     if not os.path.exists(folder):
         os.makedirs(folder)
@@ -116,8 +112,8 @@ def telecharger_si_absent(pdb_ids, folder, file_format, need_sleep=False):
         if need_sleep:
             time.sleep(1)
 
+
+
 # --- EXÉCUTION ---
 if __name__ == "__main__":
-    ids = chercher_tous_rna_ids(RESOLUTION_MAX)
-    if ids:
-        telecharger_si_absent(ids, DOSSIER_CIBLE, FORMAT_FICHIER, need_sleep=False)
+    main()
