@@ -1,28 +1,23 @@
-# RNA Structure Optimization with RASP
+# RNA Structure Optimization
 
-This repository provides tools for RNA structure prediction and assessment based on the **RASP** (All-atom knowledge-based potential) framework. It includes implementations for both all-atom gradient descent and rigid-body optimization of RNA structures.
+This repository provides tools for RNA structure prediction and assessment using statistical potentials. It supports two main optimization models: **Bead-Spring** and **Full-Atom**, with support for **RASP** and **DFIRE-RNA** potentials.
 
 ## 🚀 Features
 
-- **All-Atom Gradient Descent**: Optimize RNA structures by minimizing the RASP potential using gradient information.
-- **Rigid-Body Optimization**: A nucleotide-by-nucleotide approach to structural refinement, treating each nucleotide as a rigid entity.
-- **Potential Parsing**: Tools to parse and utilize statistical potential matrices.
-- **Visualization**: Integration for viewing RNA structures and monitoring optimization via TensorBoard.
+- **Bead-Spring Optimization**: Efficiently optimize RNA as a chain of beads (e.g., C3') using physics-based constraints (WCA, FENE) and statistical potentials.
+- **Full-Atom Optimization**: Refine RNA structures treating each nucleotide as a rigid body with 6 degrees of freedom (rotation and translation).
+- **Multiple Potentials**: Integration of both **RASP** (All-atom knowledge-based potential) and **DFIRE-RNA** (Distance-scaled, Finite Ideal-gas REference).
+- **Advanced Optimizers**: Support for **L-BFGS** and **Adam** optimizers with adaptive noise injection (basin hopping).
+- **Visualization**: Tools for monitoring optimization via TensorBoard and generating PDB files for NGLView/PyMOL.
 
-## 📊 Data Source
+## 📊 Data Sources
 
-The statistical potential matrices used in this project are sourced from the **Melo Lab** website:
-[http://melolab.org/supmat/RNApot/Sup._Data.html](http://melolab.org/supmat/RNApot/Sup._Data.html)
-
-## 📖 Citation
-
-If you use this code or the RASP potentials in your research, please cite the following paper:
-
-> Emidio Capriotti, Tomas Norambuena, Marc A. Marti-Renom, Francisco Melo, **All-atom knowledge-based potential for RNA structure prediction and assessment**, *Bioinformatics*, Volume 27, Issue 8, April 2011, Pages 1086–1093, [https://doi.org/10.1093/bioinformatics/btr093](https://doi.org/10.1093/bioinformatics/btr093)
+- **RASP**: Statistical potential matrices from the [Melo Lab](http://melolab.org/supmat/RNApot/Sup._Data.html).
+- **DFIRE-RNA**: Distance-scaled statistical potential for RNA structures.
 
 ## 🛠 Installation
 
-You can recreate the environment using the provided `environment.yml` file:
+Recreate the environment using the provided `environment.yml`:
 
 ```bash
 conda env create -f environment.yml
@@ -31,22 +26,35 @@ conda activate Stage
 
 ## 💻 Usage
 
-### All-Atom Gradient Optimization
-Run the standard optimization script:
+### 1. Bead-Spring Optimization
+Optimize a simplified representation of RNA:
 ```bash
-python main.py
+python main_bead_springs.py --sequence GGGAAACCC --score dfire --epochs 50 --cycles 10
 ```
 
-### Rigid-Body Optimization
-Run the nucleotide-by-nucleotide rigid optimization:
+### 2. Full-Atom Optimization
+Refine all atoms using rigid-body transformations:
 ```bash
-python main_rigid.py
+python main_full_atom.py --fasta example.fasta --score rasp --lr 0.1
+```
+
+### 3. Launch Scripts
+Use the provided shell scripts for standard runs:
+```bash
+./launch_bead_springs.sh
+./launch_full_atom.sh
 ```
 
 ## 🏗 Project Structure
 
-- `RNA_RASP_Gradient.py`: Core logic for all-atom gradient-based optimization.
-- `RNA_RASP_Rigid.py`: Core logic for rigid-body nucleotide optimization.
-- `parse_rasp_potentials.py`: Utilities for handling RASP potential files.
-- `main.py` / `main_rigid.py`: Entry points for running the optimizations.
-- `potentials/`: Directory containing the RASP potential matrices.
+- `main_bead_springs.py`: Entry point for Bead-Spring optimization.
+- `main_full_atom.py`: Entry point for Full-Atom rigid-body optimization.
+- `classe/`: Core classes for optimizers and RNA models.
+- `potentials/`: Directory containing RASP and DFIRE potential data.
+- `docs/`: Detailed technical documentation.
+
+## 📖 Citation
+
+If you use RASP or DFIRE potentials, please cite their respective authors:
+- **RASP**: Capriotti et al., *Bioinformatics*, 2011. [DOI: 10.1093/bioinformatics/btr093](https://doi.org/10.1093/bioinformatics/btr093)
+- **DFIRE-RNA**: (Link/Citation for DFIRE-RNA if available)

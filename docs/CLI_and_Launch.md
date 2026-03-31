@@ -1,22 +1,50 @@
 # Interfaces et Lancement de l'Optimisation
 
-Le projet propose différentes manières d'exécuter l'optimisation selon votre besoin (interactif, batch, scriping).
+Le projet propose deux points d'entrée principaux selon le modèle d'optimisation souhaité.
 
-### 1. Le script Bash: `launch_opt.sh`
-C'est le moyen le plus simple et ergonomique pour démarrer l'application si l'on ne souhaite pas entrer de longs arguments dans un terminal.
-- Ouvre un menu interactif texte dans votre terminal.
-- Permet de choisir via touches de clavier "1" ou "2" de donner sa structure en renseignant la séquence manuellement dans le terminal ou via le chemin du fichier FASTA.
-- Demande quel moteur d'énergie prioriser (RASP ou DFIRE).
-- Propose de changer les `cycles` (tours du Simulated Annealing) ou d'`epochs` (pas de descente de gradients).
-- Configure un nom de fichier output.
-- Concatène toutes ces réponses pour formuler automatiquement et lancer la commande d'exécution à `cli.py`.
+## 1. Points d'entrée (Python)
 
-### 2. Le point d'entrée universel : `cli.py`
-Il s'agit de l'exécutable formel de l'application (Command Line Interface). Propulsé par la librairie logicielle native `argparse`.
-Il gère : 
-1. La vérification syntaxique des arguments donnés (`--score`, `--cycles`, `-s`, `-f`).
-2. S'il reçoit un fichier `.fasta`, appelle la librairie `Biopython` / `SeqIO` pour en extraire la trame textuelle de manière robuste.
-3. Il crée toujours une structure canonique temporaire `fichier_arn/initial_{timestamp}.pdb` en appelant la fonction Amber `generer_first_structure()`.
-4. Il instancie ensuite la bonne classe d'optimisation PyTorch (`RNA_RASP_Optimizer` ou `RNA_DFIRE_Optimizer`, notez que dans ce fichier CLI, seuls les optimizers *Full-Atoms* sont appelés par défaut).
-5. Mesure le temps et gère l'enregistrement dans le dossier `resultat/`.
+### `main_bead_springs.py`
+Optimisation via le modèle **Bead-Spring** (chaîne de perles).
+```bash
+python main_bead_springs.py -s ACGU --score dfire --epochs 50 --cycles 20
+```
+
+### `main_full_atom.py`
+Optimisation via le modèle **Full-Atom** (corps rigides).
+```bash
+python main_full_atom.py -f sequence.fasta --score rasp --lr 0.2
+```
+
+## 2. Arguments de la ligne de commande (CLI)
+
+Les deux scripts partagent des arguments communs, mais possèdent aussi des options spécifiques.
+
+### Arguments communs :
+- `-s`, `--sequence` : Séquence ARN directe (ex: `ACGU`).
+- `-f`, `--fasta` : Chemin vers un fichier FASTA.
+- `--score {rasp, dfire}` : Fonction de score statistique à utiliser (défaut: `dfire`).
+- `-o`, `--output` : Chemin du fichier PDB de sortie.
+- `--epochs` : Nombre d'époques par cycle d'optimisation (défaut: 50).
+- `--cycles` : Nombre de cycles de "basin hopping" (défaut: 20).
+- `--lr` : Taux d'apprentissage (Learning Rate, défaut: 0.2).
+- `--noise-coords` : Intensité du bruit ajouté aux coordonnées à chaque cycle (défaut: 0.5).
+- `-v`, `--verbose` : Active l'affichage détaillé pendant l'optimisation.
+
+### Spécifiques à Bead-Spring :
+- `--k` : Constante de raideur des ressorts (défaut: 40.0).
+- `--l0` : Distance d'équilibre entre les perles (défaut: 5.5).
+- `--bead-atom` : Atome utilisé comme centre de la perle (défaut: `C3'`).
+
+### Spécifiques à Full-Atom :
+- `--backbone-weight` : Poids de la pénalité sur la connectivité du squelette (défaut: 100).
+- `--noise-angles` : Intensité du bruit ajouté aux angles de rotation à chaque cycle (défaut: 0.2).
+
+## 3. Scripts de lancement (Bash)
+
+Pour faciliter l'exécution sans mémoriser tous les arguments, deux scripts assistants sont fournis :
+- **`launch_bead_springs.sh`** : Prépare une exécution optimisée pour le modèle de perles.
+- **`launch_full_atom.sh`** : Prépare une exécution optimisée pour le modèle atomique complet.
+
+Ces scripts gèrent automatiquement la création des dossiers `fichier_arn/` et `resultat/` si nécessaire.
 
