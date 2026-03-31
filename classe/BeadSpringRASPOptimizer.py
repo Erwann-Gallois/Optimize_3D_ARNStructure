@@ -15,16 +15,11 @@ class BeadSpringRASPOptimizer:
         num_cycles=5,
         noise_coords=1.5,
         bead_atom="C3'",
-        k_fraenkel=40.0,
-        r0_fraenkel=5.5,
-        rmax_fene=1.5,
-        epsilon_lj=0.2,
-        sigma_lj=3.5,
-        exclude_near_neighbors=2,
-        angle_weight=2.0,
-        target_angle_deg=120.0,
+        k=40.0,
+        l0=5.5,
         type_RASP="c3",
-        rasp_weight=1.0,
+        score_weight=1.0,
+        verbose=True,
     ):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.lr = lr
@@ -36,21 +31,13 @@ class BeadSpringRASPOptimizer:
 
         # Paramètres RASP
         self.type_RASP = type_RASP
-        self.rasp_weight = float(rasp_weight)
+        self.rasp_weight = float(score_weight)
 
         # Paramètres FENE-Fraenkel
-        self.k_fraenkel = float(k_fraenkel)
-        self.r0_fraenkel = float(r0_fraenkel)
-        self.rmax_fene = float(rmax_fene)
+        self.k = float(k)
+        self.l0 = float(l0)
 
-        # Paramètres Lennard-Jones
-        self.epsilon_lj = float(epsilon_lj)
-        self.sigma_lj = float(sigma_lj)
-        self.exclude_near_neighbors = int(exclude_near_neighbors)
-
-        # Rigidité angulaire optionnelle
-        self.angle_weight = float(angle_weight)
-        self.target_angle_rad = np.deg2rad(target_angle_deg)
+        self.verbose = verbose
 
         self.load_dict_potentials()
         self.load_structure(pdb_path)
@@ -106,11 +93,6 @@ class BeadSpringRASPOptimizer:
         i, j = torch.triu_indices(self.num_beads, self.num_beads, offset=1)
         sep = j - i
         
-        # paires Lennard-Jones
-        mask_nonlocal = sep > self.exclude_near_neighbors
-        self.pair_i = i[mask_nonlocal].to(self.device)
-        self.pair_j = j[mask_nonlocal].to(self.device)
-        
         # paires RASP
         if getattr(self, 'potential_tensor', None) is not None:
             mask_rasp = sep > 0
@@ -135,52 +117,17 @@ class BeadSpringRASPOptimizer:
         """
         Potentiel FENE-Fraenkel sur les liaisons consécutives.
 
-        On pose : delta = r - r0
-        U(delta) = -1/2 * k * rmax^2 * log(1 - (delta/rmax)^2)
-
-        - r0 : longueur naturelle (Fraenkel)
-        - rmax : écart maximal autorisé autour de r0 (FENE)
+        On pose : delta = r - l0
+        E = 1/2 * k * (delta)^2
         """
         p1 = self.coords[:-1]
         p2 = self.coords[1:]
 
         r = torch.norm(p2 - p1, dim=1) + 1e-8
-        delta = r - self.r0_fraenkel
+        delta = r - self.l0
 
-        # Sécurité numérique : on garde delta strictement dans l'intervalle ouvert ]-rmax, rmax[
-        scaled = delta / self.rmax_fene
-        scaled = torch.clamp(scaled, -0.999999, 0.999999)
-
-        energy = -0.5 * self.k_fraenkel * (self.rmax_fene ** 2) * torch.log(1.0 - scaled ** 2)
+        energy = 0.5 * self.k * (delta ** 2)
         return torch.sum(energy)
-
-    def lj_energy(self):
-        if self.pair_i.numel() == 0:
-            return torch.tensor(0.0, device=self.device)
-
-        p1 = self.coords[self.pair_i]
-        p2 = self.coords[self.pair_j]
-        r = torch.norm(p2 - p1, dim=1) + 1e-8
-
-        sr6 = (self.sigma_lj / r) ** 6
-        lj = 4.0 * self.epsilon_lj * (sr6 ** 2 - sr6)
-
-        return torch.sum(lj)
-
-    def angle_energy(self):
-        if self.num_beads < 3 or self.angle_weight <= 0.0:
-            return torch.tensor(0.0, device=self.device)
-
-        v1 = self.coords[1:-1] - self.coords[:-2]
-        v2 = self.coords[2:] - self.coords[1:-1]
-
-        n1 = torch.norm(v1, dim=1) + 1e-8
-        n2 = torch.norm(v2, dim=1) + 1e-8
-        cos_theta = torch.sum(v1 * v2, dim=1) / (n1 * n2)
-        cos_theta = torch.clamp(cos_theta, -0.999999, 0.999999)
-        theta = torch.acos(cos_theta)
-
-        return self.angle_weight * torch.sum((theta - self.target_angle_rad) ** 2)
 
     def rasp_like_energy(self):
         if getattr(self, 'potential_tensor', None) is None or self.rasp_weight <= 0.0:
@@ -220,12 +167,10 @@ class BeadSpringRASPOptimizer:
 
     def total_energy(self):
         bond = self.fene_fraenkel_bond_energy()
-        lj = self.lj_energy()
-        angle = self.angle_energy()
         rasp = self.rasp_like_energy()
-        return bond + lj + angle + rasp, bond, lj, angle, rasp
+        return bond + rasp, bond, rasp
 
-    def optimize(self):
+    def run_optimization(self):
         optimizer = torch.optim.Adam([self.coords], lr=self.lr)
 
         best_coords = self.coords.detach().clone()
@@ -242,7 +187,7 @@ class BeadSpringRASPOptimizer:
             for epoch in range(epochs_per_cycle):
                 optimizer.zero_grad()
 
-                total, bond, lj, angle, rasp = self.total_energy()
+                total, bond, rasp = self.total_energy()
                 total.backward()
                 optimizer.step()
 
@@ -253,8 +198,7 @@ class BeadSpringRASPOptimizer:
                 if epoch % 50 == 0 or epoch == epochs_per_cycle - 1:
                     print(
                         f"Epoch {epoch:4d} | Total: {total.item():.4f} | "
-                        f"FENE-Fraenkel: {bond.item():.4f} | LJ: {lj.item():.4f} | "
-                        f"Angle: {angle.item():.4f} | RASP-CG: {rasp.item():.4f}"
+                        f"FENE-Fraenkel: {bond.item():.4f} | RASP-CG: {rasp.item():.4f}"
                     )
 
             # SHAKE
@@ -284,16 +228,28 @@ class BeadSpringRASPOptimizer:
 
         with open(self.output_path, 'w') as f:
             for i, (row, c) in enumerate(zip(self.template_rows, coords), start=1):
-                atom_name = str(row['atom_name']).strip() if 'atom_name' in row else 'P'
-                residue_name = str(row['residue_name']).strip() if 'residue_name' in row else 'RNA'
-                chain_id = str(row['chain_id']).strip() if 'chain_id' in row and str(row['chain_id']).strip() else 'A'
-                residue_number = int(row['residue_number']) if 'residue_number' in row else i
+                # Nettoyage des données
+                atom_name = str(row.get('atom_name', 'C3\'')).strip()
+                res_name = str(row.get('residue_name', 'A')).strip()
+                chain_id = str(row.get('chain_id', 'A')).strip()[:1] # 1 seul caractère
+                res_num = int(row.get('residue_number', i))
+
+                # Formatage PDB strict (Standard Protein Data Bank)
+                # Colonne 13-16 : Nom de l'atome (aligné à gauche avec un espace avant si < 4 car.)
+                # Colonne 18-20 : Nom du résidu (aligné à droite)
+                # Colonne 22    : Chain ID
+                # Colonne 23-26 : Numéro de résidu
+                
+                if len(atom_name) < 4:
+                    atom_field = f" {atom_name:<3s}"
+                else:
+                    atom_field = f"{atom_name:<4s}"
 
                 line = (
-                    f"ATOM  {i:5d} {atom_name:^4s} {residue_name:>3s} {chain_id}{residue_number:4d}    "
-                    f"{c[0]:8.3f}{c[1]:8.3f}{c[2]:8.3f}  1.00  0.00           P\n"
+                    f"ATOM  {i:5d} {atom_field:4s} {res_name:>3s} {chain_id}{res_num:4d}    "
+                    f"{c[0]:8.3f}{c[1]:8.3f}{c[2]:8.3f}  1.00  0.00           C\n"
                 )
                 f.write(line)
             f.write("END\n")
 
-        print(f"Fichier sauvegardé : {self.output_path}")
+        print(f"Fichier sauvegardé et formaté pour Arena : {self.output_path}")

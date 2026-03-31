@@ -6,7 +6,7 @@ from biopandas.pdb import PandasPdb
 from parse_rasp_potentials import load_rasp_potentials, get_rasp_type
 
 class FullAtomRASPOptimizer:
-    def __init__(self, pdb_path, lr=0.2, type_RASP="all", output_path="output_rigid.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5, backbone_weight=100.0):
+    def __init__(self, pdb_path, lr=0.2, type_RASP="all", verbose=False, output_path="output_rigid.pdb", ref_atom="C3'", num_cycles=5, epochs_per_cycle=100, noise_coords=1.5, noise_angles=0.5, backbone_weight=100.0):
         if not os.path.exists(pdb_path):
             raise FileNotFoundError(f"Le fichier PDB {pdb_path} n'existe pas.")
         
@@ -19,8 +19,10 @@ class FullAtomRASPOptimizer:
         self.epochs_per_cycle = epochs_per_cycle
         self.noise_coords = noise_coords
         self.noise_angles = noise_angles
+        self.verbose = verbose
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Utilisation du device : {self.device}")
+        if self.verbose:
+            print(f"Utilisation du device : {self.device}")
         self.best_score = float('inf')
         self.backbone_weight = backbone_weight
         # 1. Chargement des potentiels
@@ -81,19 +83,43 @@ class FullAtomRASPOptimizer:
         self.offsets = raw_coords - ref_coords_init[self.atom_to_nuc_idx]
         
         # Identification Backbone
-        self.bb_i_idx, self.bb_j_idx = [], []
+        # Identification Backbone (pour la contrainte de distance O3'-P)
+        self.bb_i_idx, self.bb_j_idx = [], [] # O3'(i) et P(i+1)
+        self.p_curr_idx, self.p_next_idx = [], [] # P(i) et P(i+1)
+        self.c3_idx = [] # C3'(i)
+
         for i in range(len(unique_res) - 1):
-            res_curr = unique_res[i]
-            res_next = unique_res[i+1]
-            idx_o3 = self.df_filtered[(self.df_filtered['residue_number'] == res_curr) & (self.df_filtered['atom_name'] == "O3'")].index
-            idx_p = self.df_filtered[(self.df_filtered['residue_number'] == res_next) & (self.df_filtered['atom_name'] == "P")].index
-            if not idx_o3.empty and not idx_p.empty:
+            res_curr, res_next = unique_res[i], unique_res[i+1]
+            
+            # On isole les atomes du résidu courant et suivant
+            # (Astuce : filtrer une seule fois par résidu est plus rapide)
+            df_curr = self.df_filtered[self.df_filtered['residue_number'] == res_curr]
+            df_next = self.df_filtered[self.df_filtered['residue_number'] == res_next]
+            
+            idx_o3 = df_curr[df_curr['atom_name'] == "O3'"].index
+            idx_c3 = df_curr[df_curr['atom_name'] == "C3'"].index
+            idx_p_c = df_curr[df_curr['atom_name'] == "P"].index
+            idx_p_n = df_next[df_next['atom_name'] == "P"].index
+            
+            # 1. Liaison O3'(i) - P(i+1)
+            if not idx_o3.empty and not idx_p_n.empty:
                 self.bb_i_idx.append(idx_o3[0])
-                self.bb_j_idx.append(idx_p[0])
+                self.bb_j_idx.append(idx_p_n[0])
+                
+            # 2. Virtual Bond P(i) - P(i+1)
+            if not idx_p_c.empty and not idx_p_n.empty:
+                self.p_curr_idx.append(idx_p_c[0])
+                self.p_next_idx.append(idx_p_n[0])
+                
+            # 3. Pour l'angle C3'(i)-O3'(i)-P(i+1), on vérifie que les 3 existent
+            if not idx_c3.empty and not idx_o3.empty and not idx_p_n.empty:
+                self.c3_idx.append(idx_c3[0])
         
-        self.bb_i_idx = torch.tensor(self.bb_i_idx, dtype=torch.long).to(self.device)
-        self.bb_j_idx = torch.tensor(self.bb_j_idx, dtype=torch.long).to(self.device)
-        self.target_bb_dist = 1.61 
+        self.bb_i_idx = torch.tensor(self.bb_i_idx, dtype=torch.long, device=self.device)
+        self.bb_j_idx = torch.tensor(self.bb_j_idx, dtype=torch.long, device=self.device)
+        self.p_curr_idx = torch.tensor(self.p_curr_idx, dtype=torch.long, device=self.device)
+        self.p_next_idx = torch.tensor(self.p_next_idx, dtype=torch.long, device=self.device)
+        self.c3_idx = torch.tensor(self.c3_idx, dtype=torch.long, device=self.device)
         
         # Données pour RASP
         atom_types = torch.tensor(self.df_filtered['rasp_type'].values, dtype=torch.long).to(self.device)
@@ -167,13 +193,23 @@ class FullAtomRASPOptimizer:
         rasp_score = torch.sum(corrected_energy * valid_mask)
 
         # Contrainte Backbone
+        bb_penalty = torch.tensor(0.0, device=self.device)
         if len(self.bb_i_idx) > 0:
-            p_o3 = current_full_coords[self.bb_i_idx]
-            p_p = current_full_coords[self.bb_j_idx]
-            bb_dists = torch.norm(p_o3 - p_p, dim=1)
-            bb_penalty = self.backbone_weight * torch.sum((bb_dists - self.target_bb_dist)**2)
-        else:
-            bb_penalty = torch.tensor(0.0, device=self.device)
+            # A. Liaison O3'-P (1.61 A)
+            p_o3, p_p = current_full_coords[self.bb_i_idx], current_full_coords[self.bb_j_idx]
+            dist_o3p = torch.norm(p_o3 - p_p, dim=1)
+            bb_penalty += torch.sum((dist_o3p - 1.61)**2) * self.backbone_weight
+
+            # B. Virtual Bond P-P (5.9 A) - Selon modèle SOP-RNA
+            if len(self.p_curr_idx) > 0:
+                dist_pp = torch.norm(current_full_coords[self.p_curr_idx] - current_full_coords[self.p_next_idx], dim=1)
+                bb_penalty += torch.sum((dist_pp - 5.9)**2) * (self.backbone_weight * 0.5)
+
+            # C. Angle C3'-O3'-P (cible ~120 deg soit cos = -0.5)
+            p_c3 = current_full_coords[self.c3_idx]
+            v1, v2 = p_c3 - p_o3, p_p - p_o3
+            cos_angle = torch.sum(v1*v2, dim=1) / (torch.norm(v1, dim=1)*torch.norm(v2, dim=1) + 1e-8)
+            bb_penalty += torch.sum((cos_angle - (-0.5))**2) * 20.0
             
         return rasp_score, bb_penalty
 
@@ -191,10 +227,12 @@ class FullAtomRASPOptimizer:
         best_rot_angles = self.rot_angles.clone().detach()
         self.best_score = float('inf')
 
-        print(f"🚀 Début de l'optimisation (Adam, {self.num_cycles} cycles de {self.epochs_per_cycle} epochs)...")
+        if self.verbose:
+            print(f"🚀 Début de l'optimisation (Adam, {self.num_cycles} cycles de {self.epochs_per_cycle} epochs)...")
         
         for cycle in range(self.num_cycles):
-            print(f"\n--- Cycle {cycle+1}/{self.num_cycles} ---")
+            if self.verbose:
+                print(f"\n--- Cycle {cycle+1}/{self.num_cycles} ---")
             
             for step in range(self.epochs_per_cycle):
                 optimizer.zero_grad()
@@ -216,7 +254,7 @@ class FullAtomRASPOptimizer:
                     best_rot_angles.copy_(self.rot_angles)
                     
                 # Affichage
-                if step % 100 == 0 or step == self.epochs_per_cycle - 1:
+                if (step % 100 == 0 or step == self.epochs_per_cycle - 1) and self.verbose:
                     print(f"Epoch {step:3d} | Total: {loss.item():.2f} | RASP: {self.rasp_score.item():.2f} | Backbone: {self.bb_penalty.item():.2f}")
             
             # --- INJECTION D'ALÉATOIRE (SHAKE) ---
@@ -226,7 +264,8 @@ class FullAtomRASPOptimizer:
                 current_noise_c = self.noise_coords * decay
                 current_noise_a = self.noise_angles * decay
                 
-                print(f"Secousse aléatoire ! (Bruit translation: {current_noise_c:.2f}Å, rotation: {current_noise_a:.2f}rad)")
+                if self.verbose:
+                    print(f"Secousse aléatoire ! (Bruit translation: {current_noise_c:.2f}Å, rotation: {current_noise_a:.2f}rad)")
                 
                 with torch.no_grad():
                     # 1. On repart du meilleur état trouvé pour ne pas perdre nos progrès
@@ -241,7 +280,8 @@ class FullAtomRASPOptimizer:
                 # Sinon Adam va essayer de continuer dans la direction d'avant la secousse
                 optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
 
-        print("\n Optimisation terminée, restauration de la meilleure conformation trouvée...")
+        if self.verbose:
+            print("\n Optimisation terminée, restauration de la meilleure conformation trouvée...")
         with torch.no_grad():
             self.ref_coords.copy_(best_ref_coords)
             self.rot_angles.copy_(best_rot_angles)
@@ -255,5 +295,6 @@ class FullAtomRASPOptimizer:
         out_ppdb.df['ATOM'][['x_coord', 'y_coord', 'z_coord']] = final_full_coords
         out_ppdb.df["ATOM"]["chain_id"] = "A"
         out_ppdb.to_pdb(path=self.output_path)
-        print(f"Optimisation Rigide terminée. Meilleur score: {self.best_score:.4f}, RASP : {self.rasp_score:.4f}, Backbone : {self.bb_penalty:.4f}")
-        print(f"Fichier sauvegardé : {self.output_path}")
+        if self.verbose:
+            print(f"Optimisation Rigide terminée. Meilleur score: {self.best_score:.4f}, RASP : {self.rasp_score:.4f}, Backbone : {self.bb_penalty:.4f}")
+            print(f"Fichier sauvegardé : {self.output_path}")

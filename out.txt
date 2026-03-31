@@ -1,6 +1,0 @@
-Traceback (most recent call last):
-  File "/home/erwann/projets/Optimize_3D_ARNStructure/cli.py", line 10, in <module>
-    from fonction import read_fasta_file, generer_first_structure, pandaspdb_vers_cif
-  File "/home/erwann/projets/Optimize_3D_ARNStructure/fonction.py", line 3, in <module>
-    import numpy as np
-ModuleNotFoundError: No module named 'numpy'
