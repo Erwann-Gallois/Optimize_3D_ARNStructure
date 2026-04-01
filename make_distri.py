@@ -1,148 +1,84 @@
-import requests
 import numpy as np
-import pandas as pd
-from Bio.PDB import MMCIFParser, PDBList, is_aa
 import os
-import argparse
-from scipy.stats import norm
-import matplotlib.pyplot as plt
-import seaborn as sns
+import csv
+from Bio.PDB.MMCIF2Dict import MMCIF2Dict
 
-def main():
-    parser = argparse.ArgumentParser(description="CLI interface for extracting atom distances from RNA structures.")
-    parser.add_argument("-f", "--folder_path", help="Path to the folder containing CIF files.")
-    parser.add_argument("-o", "--output_path", default="distances.csv", help="Path to the output CSV file.")
-    parser.add_argument("--ref_atom_name", default="C3'", help="Name of the reference atom.")
-    parser.add_argument("--visualize", action="store_true", help="Whether to visualize the distribution of distances.")
-    parser.add_argument("--export", action="store_true", help="Whether to export the distances to a CSV file.")
-    args = parser.parse_args()
-    extract_ref_atom_distance(args.folder_path, args.output_path, args.ref_atom_name, args.export, args.visualize)
-
-def extract_ref_atom_distance(folder_path, file_path, ref_atom_name="C3'", export_csv=False, visualize=False):   
-    parser = MMCIFParser(QUIET=True)
-    distances = []
-    sequence_lengths = []
+def extract_individual_distances(folder_path, output_path, ref_atom="C3'"):
+    # Liste pour stocker chaque mesure individuelle
+    # Format : [Nom_Fichier, Chaine, Index_Depart, Distance]
+    rows_individual_distances = []
     
-    # Noms standards des nucléotides ARN dans les fichiers PDB/CIF
-    rna_residues = ['A', 'C', 'G', 'U', 'RA', 'RC', 'RG', 'RU']
+    total_files = 0
 
     for filename in os.listdir(folder_path):
-        if filename.endswith(".cif"):
-            structure_id = filename[:-4]
-            try:
-                structure = parser.get_structure(structure_id, os.path.join(folder_path, filename))
-                
-                for model in structure:
-                    for chain in model:
-                        # --- FILTRAGE ARN ---
-                        # On ne garde que ce qui n'est pas une protéine ET qui est dans la liste ARN
-                        rna_in_chain = [
-                            res for res in chain.get_residues() 
-                            if not is_aa(res) and res.get_resname().strip() in rna_residues
-                        ]
-                        
-                        # Si la chaîne contient de l'ARN, on note sa longueur
-                        if len(rna_in_chain) > 0:
-                            sequence_lengths.append(len(rna_in_chain))
-                        
-                        # --- CALCUL DES DISTANCES C3' ---
-                        # On parcourt la liste filtrée pour calculer les distances entre voisins
-                        for i in range(len(rna_in_chain) - 1):
-                            res1 = rna_in_chain[i]
-                            res2 = rna_in_chain[i+1]
-                            
-                            # On vérifie que l'atome C3' est présent dans les deux nucléotides
-                            if ref_atom_name in res1 and ref_atom_name in res2:
-                                # Vérification de continuité (numéros de séquence consécutifs)
-                                if res2.get_id()[1] == res1.get_id()[1] + 1:
-                                    atom1 = res1[ref_atom_name]
-                                    atom2 = res2[ref_atom_name]
-                                    
-                                    dist = atom1 - atom2 # Distance euclidienne
-                                    distances.append(dist)
-                                    
-            except Exception as e:
-                print(f"Erreur sur {filename}: {e}")
-
-    if not distances:
-        print("Aucune distance calculée. Vérifiez les fichiers CIF et le nom de l'atome de référence.")
-        return
+        if not filename.endswith(".cif"):
+            continue
+            
+        nom_fichier = filename.split(".")[0]
+        total_files += 1
         
-    df = pd.DataFrame(distances, columns=['Distance'])
-    df_lengths = pd.DataFrame(sequence_lengths, columns=['Length'])
-    
-    if export_csv:
-        df.to_csv(file_path, index=False)
-        length_file_path = file_path.replace('.csv', '_lengths.csv')
-        if length_file_path == file_path:
-            length_file_path = file_path + "_lengths.csv"
-        df_lengths.to_csv(length_file_path, index=False)
-        print(f"Distances extraites et sauvegardées dans {file_path}.")
-        print(f"Tailles extraites et sauvegardées dans {length_file_path}.")
-    
-    if visualize:
-        visualise_distributions(df, df_lengths, ref_atom_name, export=export_csv)
+        try:
+            data_dict = MMCIF2Dict(os.path.join(folder_path, filename))
 
-    mean = df['Distance'].mean()
-    std = df['Distance'].std()
-    print(f"Distance moyenne : {mean:.3f} Å")
-    print(f"Écart-type : {std:.3f} Å")
-    
-    return mean, std
+            atom_names = data_dict["_atom_site.label_atom_id"]
+            alt_ids = data_dict["_atom_site.label_alt_id"]
+            asym_ids = data_dict["_atom_site.label_asym_id"]
+            model_nums = data_dict["_atom_site.pdbx_PDB_model_num"]
+            x_coords = data_dict["_atom_site.Cartn_x"]
+            y_coords = data_dict["_atom_site.Cartn_y"]
+            z_coords = data_dict["_atom_site.Cartn_z"]
 
-def visualise_distributions(df_dist, df_lengths, ref_atom_name="C3'", export=False):
-    data_dist = df_dist['Distance']
-    data_len = df_lengths['Length']
+            chaines_uniques = sorted(list(set(asym_ids)))
+            seq_ids = data_dict["_atom_site.label_seq_id"]
+            for chaine in chaines_uniques:
+                indices = [
+                    i for i, name in enumerate(atom_names)
+                    if name == ref_atom
+                    and asym_ids[i] == chaine 
+                    and model_nums[i] == "1" 
+                    and alt_ids[i] in [".", "A"]
+                ]
+                
+                if len(indices) >= 2:
+                    # Conversion des coordonnées en float
+                    coords = np.array([
+                        [float(x_coords[i]), float(y_coords[i]), float(z_coords[i])]
+                        for i in indices
+                    ])
+                    
+                    # Calcul des distances point à point
+                    for j in range(len(coords) - 1):
+                        idx1 = indices[j]
+                        idx2 = indices[j+1]
+                        
+                        # VÉRIFICATION DE LA CONTINUITÉ
+                        s1 = int(seq_ids[idx1])
+                        s2 = int(seq_ids[idx2])
+                        
+                        if s2 == s1 + 1:  # On ne calcule que si les résidus se suivent
+                            p1 = np.array([float(x_coords[idx1]), float(y_coords[idx1]), float(z_coords[idx1])])
+                            p2 = np.array([float(x_coords[idx2]), float(y_coords[idx2]), float(z_coords[idx2])])
+                            dist = np.linalg.norm(p1 - p2)
+                            rows_individual_distances.append([nom_fichier, chaine, f"{s1}-{s2}", round(dist, 4)])
+                    
+        except Exception as e:
+            print(f"Erreur sur le fichier {filename} : {e}")
 
-    # 1. Calcul des paramètres statistiques Distances
-    mu_dist = data_dist.mean()
-    sigma_dist = data_dist.std()
-    print(f"Distance Moyenne : {mu_dist:.3f} Å")
-    print(f"Distance Écart-type : {sigma_dist:.3f} Å")
+    # Écriture du CSV final (une ligne par distance)
+    with open(output_path, mode='w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(["Fichier", "Chaine", "Intervalle_Residus", "Distance_A"])
+        writer.writerows(rows_individual_distances)
 
-    # 2. Calcul des paramètres statistiques Tailles
-    mu_len = data_len.mean()
-    median_len = data_len.median()
-    print(f"Taille moyenne : {mu_len:.1f} nucléotides")
-    print(f"Taille médiane : {median_len:.1f} nucléotides")
+    # Petit résumé dans la console
+    if rows_individual_distances:
+        toutes_les_dist = [r[3] for r in rows_individual_distances]
+        print(f"\n--- ANALYSE TERMINÉE ---")
+        print(f"Fichiers traités : {total_files}")
+        print(f"Total de distances récoltées : {len(rows_individual_distances)}")
+        print(f"Moyenne globale : {np.mean(toutes_les_dist):.4f} Å")
+        print(f"Écart-type : {np.std(toutes_les_dist):.4f} Å")
+        print(f"Fichier CSV créé : {output_path}")
 
-    # 3. Création de la figure avec 2 sous-graphes
-    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-
-    # --- Sous-graphe 1 : Distances ---
-    sns.histplot(data_dist, kde=True, color="skyblue", stat="density", label="Distances observées", edgecolor='black', ax=axes[0])
-    x_dist = np.linspace(data_dist.min() - 0.5, data_dist.max() + 0.5, 100)
-    p_dist = norm.pdf(x_dist, mu_dist, sigma_dist)
-    axes[0].plot(x_dist, p_dist, 'r--', linewidth=2, label="Gausienne Théorique")
-    
-    axes[0].set_title(f"Distribution des distances {ref_atom_name}-{ref_atom_name} (n={len(data_dist)})", fontsize=14)
-    axes[0].set_xlabel("Distance (Å)", fontsize=12)
-    axes[0].set_ylabel("Densité de probabilité", fontsize=12)
-    axes[0].axvline(mu_dist, color='red', linestyle='-', label=f'Moyenne = {mu_dist:.2f}Å')
-    axes[0].legend()
-    axes[0].grid(axis='y', alpha=0.3)
-
-    # --- Sous-graphe 2 : Tailles ---
-    sns.histplot(data_len, bins=30, color="lightgreen", edgecolor='black', ax=axes[1])
-    
-    axes[1].set_title(f"Distribution des tailles de séquences (n={len(data_len)})", fontsize=14)
-    axes[1].set_xlabel("Taille de la séquence (nombre de nucléotides)", fontsize=12)
-    axes[1].set_ylabel("Nombre de séquences", fontsize=12)
-    axes[1].axvline(mu_len, color='red', linestyle='--', label=f'Moyenne = {mu_len:.1f}')
-    axes[1].axvline(median_len, color='blue', linestyle='-', label=f'Médiane = {median_len:.1f}')
-    axes[1].legend()
-    axes[1].grid(axis='y', alpha=0.3)
-
-    plt.tight_layout()
-
-    # 4. Sauvegarde
-    if export:
-        plt.savefig(f"distributions_combine_{ref_atom_name}.png", dpi=300)
-    
-    plt.show()
-
-if __name__ == "__main__":
-    main()
-
-
-
+# Lancement sur ton dossier
+extract_individual_distances("dataset/1-5", "distances_individuelles_1-5.csv")
