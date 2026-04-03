@@ -81,4 +81,4 @@ def extract_individual_distances(folder_path, output_path, ref_atom="C3'"):
         print(f"Fichier CSV créé : {output_path}")
 
 # Lancement sur ton dossier
-extract_individual_distances("dataset/1-5", "distances_individuelles_1-5.csv")
+extract_individual_distances("dataset/0-1", "distances_individuelles_0-1.csv")

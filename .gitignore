@@ -2,3 +2,4 @@
 /logs/*
 /classe/__pycache__/*
 /dataset/*
+*.zip

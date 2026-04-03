@@ -3,12 +3,13 @@ import torch
 import numpy as np
 from biopandas.pdb import PandasPdb
 from parse_dfire_potentials import load_dfire_potentials, get_dfire_type
-
+from Bio.PDB import Structure, Model, Chain, Residue, Atom, PDBIO
+import subprocess
 
 class BeadSpringDFIREOptimizer:
     def __init__(
         self,
-        pdb_path,
+        sequence,
         lr=0.05,
         output_path="output_bead.pdb",
         num_epochs=500,
@@ -19,6 +20,7 @@ class BeadSpringDFIREOptimizer:
         l0=5.5,
         exclude_near_neighbors=2,
         score_weight=1.0,
+        verbose=True
     ):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.lr = lr
@@ -27,6 +29,8 @@ class BeadSpringDFIREOptimizer:
         self.num_cycles = num_cycles
         self.noise_coords = float(noise_coords)
         self.bead_atom = bead_atom
+        self.verbose = verbose
+        self.best_score = float('inf')
 
         # Paramètres DFIRE
         self.dfire_weight = float(score_weight)
@@ -36,7 +40,7 @@ class BeadSpringDFIREOptimizer:
         self.l0 = float(l0)
 
         self.load_dict_potentials()
-        self.load_structure(pdb_path)
+        self.load_structure(sequence)
         self.setup_pairs()
 
     def load_dict_potentials(self):
@@ -71,34 +75,29 @@ class BeadSpringDFIREOptimizer:
                 self.potential_tensor[idx1, idx2, :] = torch.tensor(values, dtype=torch.float32)
                 self.potential_tensor[idx2, idx1, :] = torch.tensor(values, dtype=torch.float32)
 
-    def load_structure(self, pdb_path):
-        ppdb = PandasPdb().read_pdb(pdb_path)
-        df = ppdb.df['ATOM'].copy()
-
-        unique_res = np.unique(df['residue_number'].values)
+    def load_structure(self, sequence):
+        self.num_beads = len(sequence)
         bead_coords = []
         bead_rows = []
 
-        for res_id in unique_res:
-            group = df[df['residue_number'] == res_id]
-
-            # On choisit un atome de référence si possible (plus stable qu'un centre de masse brut)
-            mask = group['atom_name'] == self.bead_atom
-            if mask.any():
-                row = group[mask].iloc[0]
-                coord = row[['x_coord', 'y_coord', 'z_coord']].values.astype(np.float32)
-                bead_rows.append(row)
-            else:
-                xyz = group[['x_coord', 'y_coord', 'z_coord']].values.astype(np.float32)
-                coord = np.mean(xyz, axis=0)
-                bead_rows.append(group.iloc[0])
-
+        for i, nt in enumerate(sequence):
+            # Coordonnées droites sur x, espacées de l0
+            coord = [float(i * self.l0), 0.0, 0.0]
             bead_coords.append(coord)
+            
+            # On stocke les infos minimales nécessaires pour setup_pairs et save_pdb
+            row = {
+                'residue_name': nt,
+                'residue_number': i + 1,
+                'chain_id': 'A',
+                'element': self.bead_atom[0],
+                'atom_name': self.bead_atom
+            }
+            bead_rows.append(row)
 
         bead_coords = np.asarray(bead_coords, dtype=np.float32)
         self.coords = torch.nn.Parameter(torch.tensor(bead_coords, dtype=torch.float32, device=self.device))
         self.template_rows = bead_rows
-        self.num_beads = self.coords.shape[0]
 
     def setup_pairs(self):
         i, j = torch.triu_indices(self.num_beads, self.num_beads, offset=1)
@@ -198,8 +197,8 @@ class BeadSpringDFIREOptimizer:
                 total.backward()
                 optimizer.step()
 
-                if total.item() < best_loss:
-                    best_loss = total.item()
+                if total.item() < self.best_score:
+                    self.best_score = total.item()
                     best_coords.copy_(self.coords.detach())
 
                 if epoch % 50 == 0 or epoch == self.num_epochs - 1:
@@ -217,12 +216,8 @@ class BeadSpringDFIREOptimizer:
                 print(f"Secousse aléatoire ! (Bruit: {current_noise_c:.5f}Å)")
                 
                 with torch.no_grad():
-                    # Repartir du meilleur état pour pas divergé
                     self.coords.copy_(best_coords)
-                    # Bruit gaussien
                     self.coords.add_(torch.randn_like(self.coords) * current_noise_c)
-
-                # Reset de l'optimiseur pour annuler le momentum de Adam
                 optimizer = torch.optim.Adam([self.coords], lr=self.lr)
 
         print("\nOptimisation terminée, on restaure la meilleure conformation trouvée...")
@@ -232,20 +227,73 @@ class BeadSpringDFIREOptimizer:
         self.save_pdb()
 
     def save_pdb(self):
+        # 1. Récupération des coordonnées optimisées
         coords = self.coords.detach().cpu().numpy()
 
-        with open(self.output_path, 'w') as f:
-            for i, (row, c) in enumerate(zip(self.template_rows, coords), start=1):
-                atom_name = str(row['atom_name']).strip() if 'atom_name' in row else 'P'
-                residue_name = str(row['residue_name']).strip() if 'residue_name' in row else 'RNA'
-                chain_id = str(row['chain_id']).strip() if 'chain_id' in row and str(row['chain_id']).strip() else 'A'
-                residue_number = int(row['residue_number']) if 'residue_number' in row else i
+        # 2. Création de la structure hiérarchique Biopython
+        structure = Structure.Structure("optimized")
+        model = Model.Model(0)
+        structure.add(model)
 
-                line = (
-                    f"ATOM  {i:5d} {atom_name:^4s} {residue_name:>3s} {chain_id}{residue_number:4d}    "
-                    f"{c[0]:8.3f}{c[1]:8.3f}{c[2]:8.3f}  1.00  0.00           C\n"
-                )
-                f.write(line)
-            f.write("END\n")
+        # Dictionnaire pour stocker les chaînes créées
+        chains = {}
 
-        print(f"Fichier sauvegardé : {self.output_path}")
+        for i, (row, coord) in enumerate(zip(self.template_rows, coords), start=1):
+            # Extraction propre des métadonnées
+            chain_id = str(row['chain_id']).strip() if 'chain_id' in row and str(row['chain_id']).strip() else 'A'
+            res_name = str(row['residue_name']).strip() if 'residue_name' in row else 'RNA'
+            res_num = int(row['residue_number']) if 'residue_number' in row else i
+            atom_name = str(row['atom_name']).strip() if 'atom_name' in row else self.bead_atom
+            
+            # Gestion des chaînes
+            if chain_id not in chains:
+                new_chain = Chain.Chain(chain_id)
+                model.add(new_chain)
+                chains[chain_id] = new_chain
+            
+            current_chain = chains[chain_id]
+
+            # Création du résidu (id = (' ', numero, ' '))
+            # Note: Biopython utilise un tuple pour l'ID du résidu (hetero-flag, sequence_number, insertion_code)
+            residue = Residue.Residue((' ', res_num, ' '), res_name, ' ')
+            
+            # Création de l'atome
+            # Atom.Atom(name, coord, b_factor, occupancy, altloc, fullname, serial_number, element)
+            atom = Atom.Atom(
+                atom_name, 
+                coord.tolist(), 
+                0.0,    # B-factor
+                1.0,    # Occupancy
+                ' ',    # Altloc
+                f" {atom_name:<3}", # Fullname (4 caractères avec espaces)
+                i,      # Serial number
+                element='C' # Element
+            )
+            
+            residue.add(atom)
+            current_chain.add(residue)
+
+        # 3. Écriture du fichier avec PDBIO
+        io = PDBIO()
+        io.set_structure(structure)
+        io.save(self.output_path)
+        # On sépare chaque espace de votre commande en un élément de liste
+        commande = [
+            "./../Arena/Arena", 
+            self.output_path, 
+            self.output_path.replace(".pdb", "_full_atom.pdb"), 
+            "5"
+        ]
+
+        try:
+            # Lancement de l'exécution
+            resultat = subprocess.run(commande, capture_output=True, text=True, check=True)
+            
+            # Affichage de ce que Arena a renvoyé
+            print(f"✅ Fichier PDB bien formaté sauvegardé : {self.output_path.replace('.pdb', '_full_atom.pdb')}")
+            print(f"Meilleur score : {self.best_score}")
+            os.remove(self.output_path)
+
+        except subprocess.CalledProcessError as e:
+            print("Erreur lors de l'exécution d'Arena :")
+            print(e.stderr)

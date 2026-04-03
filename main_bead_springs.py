@@ -35,37 +35,6 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output during optimization")
     args = parser.parse_args()
 
-    sequence = ""
-    if args.fasta:
-        print(f"Reading FASTA file: {args.fasta}")
-        try:
-            from Bio import SeqIO
-            record = next(SeqIO.parse(args.fasta, "fasta"))
-            sequence = str(record.seq).upper().replace("T", "U")
-        except Exception as e:
-            print(f"Error reading FASTA: {e}")
-            sys.exit(1)
-    else:
-        sequence = args.sequence.upper().replace("T", "U")
-
-    print(f"Sequence loaded ({len(sequence)} nuc): {sequence[:50]}...")
-
-    # 2. Initial structure generation
-    os.makedirs("fichier_arn", exist_ok=True)
-    os.makedirs("resultat", exist_ok=True)
-    
-    initial_pdb = f"fichier_arn/initial_{int(time.time())}.pdb"
-    generer_first_structure(sequence, initial_pdb)
-    
-    print("Generating initial straight structure...")
-    
-    
-    if not os.path.exists(initial_pdb):
-        print("Error: Initial structure could not be generated.")
-        sys.exit(1)
-        
-
-
     # 3. Optimizer selection
     output_path = args.output if args.output else f"resultat/optimized_bs_{args.score}_{int(time.time())}.pdb"
     
@@ -85,18 +54,16 @@ def main():
     OptClass = optimizer_classes[args.score]
 
     opt = OptClass(
-        pdb_path = initial_pdb,
-        lr=args.lr,
-        output_path=output_path,
-        num_epochs=args.epochs,
-        num_cycles=args.cycles,
-        noise_coords=args.noise_coords,
-        bead_atom=args.bead_atom,
-        k=args.k,
-        l0=args.l0,
-        score_weight=1.0,
-        verbose=args.verbose,
-    )
+            sequence = args.sequence,
+            lr=args.lr,
+            output_path=output_path,
+            noise_coords=args.noise_coords,
+            bead_atom=args.bead_atom,
+            k=args.k,
+            l0=args.l0,
+            score_weight=1.0,
+            verbose=args.verbose,
+        )
 
     # 4. Optimization run
     print("\n--- Starting optimization ---")
@@ -104,8 +71,7 @@ def main():
     opt.run_optimization()
     end_time = time.perf_counter()
     print("--- Optimization finished ---")
-    
-    print(f"Best score obtained: {opt.best_score}")
+    # print(f"Best score obtained: {opt.best_score}")
     print(f"Result saved in: {output_path}")
     print(f"Execution time: {end_time - start_time:.2f} seconds")
 if __name__ == "__main__":
