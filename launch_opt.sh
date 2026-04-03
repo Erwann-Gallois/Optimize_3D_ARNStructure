@@ -40,11 +40,13 @@ echo ""
 echo "Choose scoring function:"
 echo "1) RASP"
 echo "2) DFIRE"
-read -p "Your choice (1/2): " score_choice
+echo "3) rsRNASP"
+read -p "Your choice (1/2/3): " score_choice
 
 case $score_choice in
     1) SCORE="rasp" ;;
     2) SCORE="dfire" ;;
+    3) SCORE="rsRNASP" ;;
     *) echo "Invalid choice. Using rasp by default." ; SCORE="rasp" ;;
 esac
 

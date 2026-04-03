@@ -11,6 +11,7 @@ from fonction import read_fasta_file, generer_first_structure
 
 from BeadSpringRASPOptimizer import BeadSpringRASPOptimizer
 from BeadSpringDFIREOptimizer import BeadSpringDFIREOptimizer
+from BeadSpringRsRNASPOptimizer import BeadSpringRsRNASPOptimizer
 
 def main():
     parser = argparse.ArgumentParser(description="CLI interface for 3D RNA structure bead-spring optimization.")
@@ -20,14 +21,16 @@ def main():
     group.add_argument("-f", "--fasta", type=str, help="Path to a FASTA file")
 
     # Argument for scoring function (restricted to full atoms for now)
-    parser.add_argument("--score", type=str, choices=["rasp", "dfire"], 
+    parser.add_argument("--score", type=str, choices=["rasp", "dfire", "rsRNASP"], 
                         default="dfire", help="Full-atom scoring function to use (default: dfire)")
     
     # Arguments for optimization
     parser.add_argument("-o", "--output", type=str, help="Output PDB file")
-    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs per cycle (default: 50)")
-    parser.add_argument("--cycles", type=int, default=20, help="Number of cycles (default: 20)")
-    parser.add_argument("--lr", type=float, default=0.2, help="Learning rate (default: 0.2)")
+    parser.add_argument("--patience-locale", type=int, default=100, help="Number of epochs before local optimization (default: 100)")
+    parser.add_argument("--patience-globale", type=int, default=5, help="Number of epochs before global optimization (default: 5)")
+    parser.add_argument("--min-delta", type=float, default=1e-4, help="Minimum delta for local optimization (default: 1e-4)")
+    parser.add_argument("--taux-refroidissement", type=float, default=0.85, help="Rate of temperature decrease (default: 0.85)")
+    parser.add_argument("--bruit-min", type=float, default=0.01, help="Minimum temperature (default: 0.01)")
     parser.add_argument("--noise-coords", type=float, default=0.5, help="Noise on coordinates (default: 10.0)")
     parser.add_argument("--k", type=float, default=40.0, help="Spring constant (default: 40.0)")
     parser.add_argument("--l0", type=float, default=5.5, help="Equilibrium length (default: 5.5)")
@@ -48,14 +51,14 @@ def main():
 
     optimizer_classes = {
         "rasp": BeadSpringRASPOptimizer,
-        "dfire": BeadSpringDFIREOptimizer
+        "dfire": BeadSpringDFIREOptimizer,
+        "rsRNASP": BeadSpringRsRNASPOptimizer
     }
     
     OptClass = optimizer_classes[args.score]
 
     opt = OptClass(
             sequence = args.sequence,
-            lr=args.lr,
             output_path=output_path,
             noise_coords=args.noise_coords,
             bead_atom=args.bead_atom,
@@ -63,6 +66,11 @@ def main():
             l0=args.l0,
             score_weight=1.0,
             verbose=args.verbose,
+            patience_locale=args.patience_locale,
+            patience_globale=args.patience_globale,
+            min_delta=args.min_delta,
+            taux_refroidissement=args.taux_refroidissement,
+            bruit_min=args.bruit_min,
         )
 
     # 4. Optimization run
@@ -71,8 +79,6 @@ def main():
     opt.run_optimization()
     end_time = time.perf_counter()
     print("--- Optimization finished ---")
-    # print(f"Best score obtained: {opt.best_score}")
-    print(f"Result saved in: {output_path}")
     print(f"Execution time: {end_time - start_time:.2f} seconds")
 if __name__ == "__main__":
     main()

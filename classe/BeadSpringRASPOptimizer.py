@@ -12,8 +12,6 @@ class BeadSpringRASPOptimizer:
         sequence,
         lr=0.2,
         output_path="output_bead.pdb",
-        num_epochs=500,
-        num_cycles=5,
         noise_coords=1.5,
         bead_atom="C3'",
         k=20.0,
@@ -57,9 +55,11 @@ class BeadSpringRASPOptimizer:
         if os.path.exists(path):
             taille_mat, dict_pots = load_rasp_potentials(path)
             self.convert_dict_to_tensor(dict_pots, taille_mat)
-            print(f"Potentiels RASP '{self.type_RASP}' chargés.")
+            if self.verbose:
+                print(f"RASP potentials '{self.type_RASP}' loaded.")
         else:
-            print(f"Fichier de potentiel non trouvé : {path}, RASP ignoré.")
+            if self.verbose:
+                print(f"Potential file not found : {path}, RASP ignored.")
             self.potential_tensor = None
 
     def convert_dict_to_tensor(self, dict_pots, taille_mat):
@@ -194,13 +194,15 @@ class BeadSpringRASPOptimizer:
         cycles_sans_amelioration = 0
         cycle_count = 0
 
-        print(f"Utilisation du device : {self.device}")
-        print(f"🚀 Début de l'optimisation dynamique (Algorithme Bassin Hopping/Recuit)...")
+        if self.verbose:
+            print(f"Use of device : {self.device}")
+            print(f"Start of dynamic optimization (Bassin Hopping/Annealing Algorithm)...")
 
         # BOUCLE EXTERNE : Contrôlée par le niveau de bruit et les échecs successifs
         while current_noise > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
             cycle_count += 1
-            print(f"\n--- Phase d'Exploration {cycle_count} (Bruit de secousse: {current_noise:.4f}Å) ---")
+            if self.verbose:
+                print(f"\n--- Exploration Phase {cycle_count} (Shake noise: {current_noise:.4f}Å) ---")
             
             patience_counter = 0
             prev_loss = float('inf')
@@ -227,34 +229,40 @@ class BeadSpringRASPOptimizer:
 
                 # Affichage tous les 100 pas pour surveiller
                 if epoch % 100 == 0:
-                    print(f"  Itération {epoch:4d} | Total: {current_loss:.4f} | FENE: {bond:.4f} | RASP: {rasp:.4f}")
+                    if self.verbose:
+                        print(f"  Itération {epoch:4d} | Total: {current_loss:.4f} | FENE: {bond:.4f} | RASP: {rasp:.4f}")
 
                 # Arrêt de la phase locale si on est coincé dans un minimum
                 if patience_counter >= self.patience_locale:
-                    print(f"  🛑 Minimum local atteint en {epoch} itérations.")
+                    if self.verbose:
+                        print(f"  Local minimum reached in {epoch} iterations.")
                     break
                 
                 # Sécurité : valve de secours pour éviter une boucle infinie pure (ex: oscillation)
                 if epoch > 10000:
-                    print(f"  ⚠️ Phase locale trop longue, coupure de sécurité à 10000.")
+                    if self.verbose:
+                        print(f"  Local phase too long, safety cutoff at 10000.")
                     break
 
             # --- BILAN DU CYCLE ---
             # Est-ce que ce minimum local est le meilleur jamais trouvé ?
             if current_loss < (self.best_score - self.min_delta):
-                print(f"  🌟 Nouveau record absolu ! {self.best_score:.4f} -> {current_loss:.4f}")
+                if self.verbose:
+                    print(f"  New absolute record ! {self.best_score:.4f} -> {current_loss:.4f}")
                 self.best_score = current_loss
                 best_coords.copy_(self.coords.detach())
                 cycles_sans_amelioration = 0  # On remet le compteur d'échecs à zéro
             else:
                 cycles_sans_amelioration += 1
-                print(f"  ❌ Pas de record. (Tentatives infructueuses : {cycles_sans_amelioration}/{self.patience_globale})")
+                if self.verbose:
+                    print(f"  No record. (Unsuccessful attempts : {cycles_sans_amelioration}/{self.patience_globale})")
 
             # --- PRÉPARATION DU CYCLE SUIVANT ---
             current_noise *= self.taux_refroidissement  # Le système "refroidit"
             
             if current_noise > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
-                print(f"  -> Application du SHAKE. Retour à la meilleure conformation et ajout de bruit.")
+                if self.verbose:
+                    print(f"  -> Application du SHAKE. Return to the best conformation and add noise.")
                 with torch.no_grad():
                     self.coords.copy_(best_coords)
                     self.coords.add_(torch.randn_like(self.coords) * current_noise)
@@ -262,11 +270,12 @@ class BeadSpringRASPOptimizer:
                 optimizer = torch.optim.Adam([self.coords], lr=self.lr)
 
         # --- FIN DE L'OPTIMISATION ---
-        print("\n✅ Optimisation globale terminée !")
-        if current_noise <= self.bruit_min:
-            print("👉 Raison : Le système a refroidi (le bruit est devenu trop faible pour casser les liaisons).")
-        else:
-            print(f"👉 Raison : Incapacité à trouver un meilleur repliement après {self.patience_globale} secousses consécutives.")
+        if self.verbose:
+            print("\n Global optimization finished !")
+            if current_noise <= self.bruit_min:
+                print("Reason : The system has cooled (the noise has become too weak to break the bonds).")
+            else:
+                print(f"Reason : Inability to find a better folding after {self.patience_globale} consecutive shakes.")
 
         with torch.no_grad():
             self.coords.copy_(best_coords)
@@ -338,10 +347,12 @@ class BeadSpringRASPOptimizer:
             resultat = subprocess.run(commande, capture_output=True, text=True, check=True)
             
             # Affichage de ce que Arena a renvoyé
-            print(f"✅ Fichier PDB bien formaté sauvegardé : {self.output_path.replace('.pdb', '_full_atom.pdb')}")
-            print(f"Meilleur score : {self.best_score}")
+            if self.verbose:
+                print(f"Well formatted PDB file saved : {self.output_path.replace('.pdb', '_full_atom.pdb')}")
+                print(f"Best score : {self.best_score}")
             os.remove(self.output_path)
 
         except subprocess.CalledProcessError as e:
-            print("Erreur lors de l'exécution d'Arena :")
-            print(e.stderr)
+            if self.verbose:
+                print("Error during Arena execution :")
+                print(e.stderr)
