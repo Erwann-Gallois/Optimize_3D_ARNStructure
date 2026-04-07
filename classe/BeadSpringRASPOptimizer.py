@@ -12,10 +12,12 @@ class BeadSpringRASPOptimizer:
         sequence,
         lr=0.2,
         output_path="output_bead.pdb",
-        noise_coords=1.5,
+        noise_coords=3.0,
         bead_atom="C3'",
-        k=5.04,
-        l0=5.72,
+        k=45.86,        # Issu de std=0.305
+        l0=5.726,
+        k_angle=30.0,   # Raideur d'angle (ajustée pour RASP)
+        theta0=139.07,  # Ta moyenne d'angle calculée
         type_RASP="all",
         score_weight=1.0,
         verbose=True,
@@ -43,6 +45,8 @@ class BeadSpringRASPOptimizer:
         # Paramètres FENE-Fraenkel
         self.k = float(k)
         self.l0 = float(l0)
+        self.k_angle = float(k_angle)
+        self.theta0_rad = float(theta0) * np.pi / 180.0
 
         self.verbose = verbose
 
@@ -120,26 +124,18 @@ class BeadSpringRASPOptimizer:
 
     def fene_fraenkel_bond_energy(self):
         """
-        Potentiel FENE pour les liaisons C3'-C3'.
-        Empêche l'étirement au-delà de l'extension maximale R0.
+        Potentiel FENE-Fraenkel sur les liaisons consécutives.
+
+        On pose : delta = r - l0
+        E = 1/2 * k * (delta)^2
         """
         p1 = self.coords[:-1]
         p2 = self.coords[1:]
 
         r = torch.norm(p2 - p1, dim=1) + 1e-8
         delta = r - self.l0
-        
-        # On définit R0 (ex: 1.5 Angström d'élongation max autorisée)
-        R0 = 1.5 
-        
-        # Formule FENE : -0.5 * k * R0^2 * ln(1 - (delta/R0)^2)
-        # On ajoute un epsilon pour la stabilité numérique du log
-        ratio = (delta / R0)**2
-        # Sécurité pour éviter log(0) ou log négatif si le gradient est trop violent
-        ratio = torch.clamp(ratio, 0, 0.999) 
-        
-        energy = -0.5 * self.k * (R0**2) * torch.log(1 - ratio)
-        
+
+        energy = 0.5 * self.k * (delta ** 2)
         return torch.sum(energy)
 
     def rasp_like_energy(self):
@@ -178,10 +174,23 @@ class BeadSpringRASPOptimizer:
         
         return self.rasp_weight * rasp_score
 
+    def valence_angle_energy(self):
+        """Rigidité de flexion pour éviter l'effet 'ressort' écrasé."""
+        if self.num_beads < 3: return torch.tensor(0.0, device=self.device)
+        v1 = self.coords[:-2] - self.coords[1:-1]
+        v2 = self.coords[2:] - self.coords[1:-1]
+        dot = torch.sum(v1 * v2, dim=1)
+        norms = torch.norm(v1, dim=1) * torch.norm(v2, dim=1)
+        cos_theta = torch.clamp(dot / (norms + 1e-8), -0.999, 0.999)
+        theta = torch.acos(cos_theta)
+        energy = 0.5 * self.k_angle * (theta - self.theta0_rad)**2
+        return torch.sum(energy)
+
     def total_energy(self):
         bond = self.fene_fraenkel_bond_energy()
         rasp = self.rasp_like_energy()
-        return bond + rasp, bond, rasp
+        angle = self.valence_angle_energy()
+        return bond + rasp + angle, bond, rasp, angle
 
     def run_optimization(self):
         """
@@ -219,7 +228,7 @@ class BeadSpringRASPOptimizer:
             # BOUCLE INTERNE : Remplace 'for epoch in range(num_epochs)'
             while True:
                 optimizer.zero_grad()
-                total, bond, rasp = self.total_energy()
+                total, bond, rasp, angle = self.total_energy()
                 total.backward()
                 optimizer.step()
 
@@ -238,7 +247,7 @@ class BeadSpringRASPOptimizer:
                 # Affichage tous les 100 pas pour surveiller
                 if epoch % 100 == 0:
                     if self.verbose:
-                        print(f"  Itération {epoch:4d} | Total: {current_loss:.4f} | FENE: {bond:.4f} | RASP: {rasp:.4f}")
+                        print(f"  Itération {epoch:4d} | Total: {current_loss:.4f} | FENE: {bond:.4f} | RASP: {rasp:.4f} | Angle: {angle:.4f}")
 
                 # Arrêt de la phase locale si on est coincé dans un minimum
                 if patience_counter >= self.patience_locale:

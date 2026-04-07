@@ -10,14 +10,14 @@ class BeadSpringDFIREOptimizer:
     def __init__(
         self,
         sequence,
-        lr=0.2,
+        lr=0.05,
         output_path="output_bead.pdb",
         noise_coords=1.5,
         bead_atom="C3'",
         k=20.0,
         l0=5.5,
         type_RASP="all",
-        score_weight=5.0,
+        score_weight=50.0,
         verbose=True,
         patience_locale=100, 
         min_delta=1e-4, 
@@ -174,7 +174,7 @@ class BeadSpringDFIREOptimizer:
         energy1 = self.potential_tensor[self.t1_vals, self.t2_vals, d1]
         
         interp_energy = (1.0 - alpha) * energy0 + alpha * energy1
-        
+        # print(interp_energy[0:10])
         # Cutoff sigmoid pour une annulation douce autour de 19.6A (comme dans RASP)
         # On peut aussi utiliser un masque brutal: (dists < max_dist).float()
         cutoff = torch.sigmoid(2.0 * (max_dist - dists))
@@ -240,7 +240,7 @@ class BeadSpringDFIREOptimizer:
                 epoch += 1
 
                 # Affichage tous les 100 pas pour surveiller
-                if epoch % 100 == 0:
+                if epoch % 1000 == 0:
                     if self.verbose:
                         print(f"  Iteration {epoch:4d} | Total: {current_loss:.4f} | FENE: {bond:.4f} | DFIRE: {dfire:.4f}")
 

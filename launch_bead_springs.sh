@@ -20,14 +20,14 @@ TAUX_REFROIDISSEMENT=${TAUX_REFROIDISSEMENT:-0.85}
 read -p "Minimum temperature (default 0.01): " BRUIT_MIN
 BRUIT_MIN=${BRUIT_MIN:-0.01}
 
-read -p "Noise on coordinates (default 1.5): " NOISE_COORDS
-NOISE_COORDS=${NOISE_COORDS:-1.5}
+read -p "Noise on coordinates (default 3.0): " NOISE_COORDS
+NOISE_COORDS=${NOISE_COORDS:-3.0}
 
-read -p "Enter spring constant (default 20.0): " K
-K=${K:-20.0}
+read -p "Enter spring constant (default 45.28): " K
+K=${K:-45.28}
 
-read -p "Enter equilibrium length (default 5.8): " L0
-L0=${L0:-5.8}
+read -p "Enter equilibrium length (default 5.726): " L0
+L0=${L0:-5.726}
 
 read -p "Enter bead atom (default C3'): " BEAD_ATOM
 BEAD_ATOM=${BEAD_ATOM:-"C3'"}
