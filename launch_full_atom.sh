@@ -5,13 +5,20 @@ INPUT_ARG=$2
 
 # 3. Optional Parameters
 echo ""
-read -p "Number of cycles (default 20): " CYCLES
-CYCLES=${CYCLES:-20}
+read -p "Patience locale (itérations sans amélioration, défaut 100): " PATIENCE_LOCALE
+PATIENCE_LOCALE=${PATIENCE_LOCALE:-100}
 
-read -p "Epochs per cycle (default 50): " EPOCHS
-EPOCHS=${EPOCHS:-50}
+read -p "Min delta (gain d'énergie min, défaut 1e-4): " MIN_DELTA
+MIN_DELTA=${MIN_DELTA:-1e-4}
 
+read -p "Patience globale (secousses sans record, défaut 5): " PATIENCE_GLOBALE
+PATIENCE_GLOBALE=${PATIENCE_GLOBALE:-5}
 
+read -p "Taux de refroidissement (défaut 0.85): " TAUX_REFROIDISSEMENT
+TAUX_REFROIDISSEMENT=${TAUX_REFROIDISSEMENT:-0.85}
+
+read -p "Bruit minimum (défaut 0.01): " BRUIT_MIN
+BRUIT_MIN=${BRUIT_MIN:-0.01}
 
 read -p "Enter backbone weight (default 100): " BACKBONE_WEIGHT
 BACKBONE_WEIGHT=${BACKBONE_WEIGHT:-100}
@@ -39,13 +46,15 @@ else
 fi
 
 # 5. Execution
+CMD_ARGS="$INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --min-delta $MIN_DELTA --patience-globale $PATIENCE_GLOBALE --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --backbone-weight $BACKBONE_WEIGHT --noise-coords $NOISE_COORDINATE --noise-angles $NOISE_ANGLES $VERBOSE $OUTPUT_ARG"
+
 echo ""
 echo ">>> Running command:"
-echo "python main_full_atom.py $INPUT_ARG --score $SCORE --cycles $CYCLES --epochs $EPOCHS --backbone-weight $BACKBONE_WEIGHT --noise-coords $NOISE_COORDINATE --noise-angles $NOISE_ANGLES $VERBOSE $OUTPUT_ARG"
+echo "python main_full_atom.py $CMD_ARGS"
 echo ""
 
 if command -v conda &> /dev/null && [ -n "$CONDA_DEFAULT_ENV" ]; then
-    python main_full_atom.py $INPUT_ARG --score $SCORE --cycles $CYCLES --epochs $EPOCHS --backbone-weight $BACKBONE_WEIGHT --noise-coords $NOISE_COORDINATE --noise-angles $NOISE_ANGLES $VERBOSE $OUTPUT_ARG
+    python main_full_atom.py $CMD_ARGS
 else
-    python3 main_full_atom.py $INPUT_ARG --score $SCORE --cycles $CYCLES --epochs $EPOCHS --backbone-weight $BACKBONE_WEIGHT --noise-coords $NOISE_COORDINATE --noise-angles $NOISE_ANGLES $VERBOSE $OUTPUT_ARG
+    python3 main_full_atom.py $CMD_ARGS
 fi

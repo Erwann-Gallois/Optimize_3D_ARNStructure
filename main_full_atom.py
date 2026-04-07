@@ -10,6 +10,7 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "classe
 from fonction import read_fasta_file, generer_first_structure
 from FullAtomRASPOptimizer import FullAtomRASPOptimizer
 from FullAtomDFIREOptimizer import FullAtomDFIREOptimizer
+from FullAtomRsRNASPOptimizer import FullAtomRsRNASPOptimizer
 
 def main():
     parser = argparse.ArgumentParser(description="CLI interface for 3D RNA structure full-atom optimization.")
@@ -20,13 +21,16 @@ def main():
     group.add_argument("-f", "--fasta", type=str, help="Path to a FASTA file")
     
     # Argument for scoring function (restricted to full atoms for now)
-    parser.add_argument("--score", type=str, choices=["rasp", "dfire"], 
-                        default="dfire", help="Full-atom scoring function to use (default: dfire)")
+    parser.add_argument("--score", type=str, choices=["rasp", "dfire", "rsRNASP"], 
+                        default="rasp", help="Full-atom scoring function to use (default: dfire)")
     
     # Arguments for optimization
     parser.add_argument("-o", "--output", type=str, help="Output PDB file")
-    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs per cycle (default: 50)")
-    parser.add_argument("--cycles", type=int, default=20, help="Number of cycles (default: 20)")
+    parser.add_argument("--patience-locale", type=int, default=100, help="Iterations without improvement before stopping local phase (default: 100)")
+    parser.add_argument("--min-delta", type=float, default=1e-4, help="Minimum energy change to be considered an improvement (default: 1e-4)")
+    parser.add_argument("--patience-globale", type=int, default=5, help="Shakes without finding a new record before stopping (default: 5)")
+    parser.add_argument("--taux-refroidissement", type=float, default=0.85, help="Reduction factor for noise after each shake (default: 0.85)")
+    parser.add_argument("--bruit-min", type=float, default=0.01, help="Noise threshold to stop optimization (default: 0.01)")
     parser.add_argument("--lr", type=float, default=0.2, help="Learning rate (default: 0.2)")
     parser.add_argument("--backbone-weight", type=int, default=100, help="Weight of the backbone atoms (default: 100)")
     parser.add_argument("--noise-coords", type=float, default=0.5, help="Noise on coordinates (default: 10.0)")
@@ -79,7 +83,8 @@ def main():
 
     optimizer_classes = {
         "rasp": FullAtomRASPOptimizer,
-        "dfire": FullAtomDFIREOptimizer
+        "dfire": FullAtomDFIREOptimizer,
+        "rsRNASP": FullAtomRsRNASPOptimizer,
     }
     
     OptClass = optimizer_classes[args.score]
@@ -90,15 +95,18 @@ def main():
     # Passing everything as named arguments for Clarity
     opt = OptClass(
         pdb_path=initial_pdb,
-        epochs_per_cycle=args.epochs,
         lr=args.lr,
         output_path=output_path,
         ref_atom="all", # Force all for full atom
-        num_cycles=args.cycles,
         noise_coords=args.noise_coords,
         noise_angles=args.noise_angles,
         backbone_weight=args.backbone_weight,
-        verbose=args.verbose
+        verbose=args.verbose,
+        patience_locale=args.patience_locale,
+        min_delta=args.min_delta,
+        patience_globale=args.patience_globale,
+        taux_refroidissement=args.taux_refroidissement,
+        bruit_min=args.bruit_min
     )
 
     # 4. Optimization run

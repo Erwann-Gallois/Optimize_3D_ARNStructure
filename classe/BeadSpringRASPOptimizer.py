@@ -14,10 +14,10 @@ class BeadSpringRASPOptimizer:
         output_path="output_bead.pdb",
         noise_coords=1.5,
         bead_atom="C3'",
-        k=20.0,
-        l0=5.5,
+        k=5.04,
+        l0=5.72,
         type_RASP="all",
-        score_weight=5.0,
+        score_weight=1.0,
         verbose=True,
         patience_locale=100, 
         min_delta=1e-4, 
@@ -120,18 +120,26 @@ class BeadSpringRASPOptimizer:
 
     def fene_fraenkel_bond_energy(self):
         """
-        Potentiel FENE-Fraenkel sur les liaisons consécutives.
-
-        On pose : delta = r - l0
-        E = 1/2 * k * (delta)^2
+        Potentiel FENE pour les liaisons C3'-C3'.
+        Empêche l'étirement au-delà de l'extension maximale R0.
         """
         p1 = self.coords[:-1]
         p2 = self.coords[1:]
 
         r = torch.norm(p2 - p1, dim=1) + 1e-8
         delta = r - self.l0
-
-        energy = 0.5 * self.k * (delta ** 2)
+        
+        # On définit R0 (ex: 1.5 Angström d'élongation max autorisée)
+        R0 = 1.5 
+        
+        # Formule FENE : -0.5 * k * R0^2 * ln(1 - (delta/R0)^2)
+        # On ajoute un epsilon pour la stabilité numérique du log
+        ratio = (delta / R0)**2
+        # Sécurité pour éviter log(0) ou log négatif si le gradient est trop violent
+        ratio = torch.clamp(ratio, 0, 0.999) 
+        
+        energy = -0.5 * self.k * (R0**2) * torch.log(1 - ratio)
+        
         return torch.sum(energy)
 
     def rasp_like_energy(self):

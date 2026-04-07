@@ -3,9 +3,11 @@ import torch
 import numpy as np
 import pandas as pd
 from biopandas.pdb import PandasPdb
-from parse_dfire_potentials import load_dfire_potentials, get_dfire_type
 
-class FullAtomDFIREOptimizer:
+# Importation du parseur spécifique pour rsRNASP
+from parse_rsrnasp_potentials import load_rsrnasp_potentials, get_rsrnasp_type, ATOM_TYPES_85
+
+class FullAtomRsRNASPOptimizer:
     def __init__(
         self, 
         pdb_path, 
@@ -15,6 +17,8 @@ class FullAtomDFIREOptimizer:
         noise_coords=1.5, 
         noise_angles=0.5, 
         backbone_weight=100.0, 
+        rsrnasp_weight=0.5, # Poids réduit pour éviter le molten globule
+        clash_weight=100.0, # Poids fort pour interdire les chevauchements
         verbose=True,
         patience_locale=100, 
         min_delta=1e-4, 
@@ -37,65 +41,58 @@ class FullAtomDFIREOptimizer:
         self.taux_refroidissement = taux_refroidissement
         self.bruit_min = bruit_min
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Utilisation du device : {self.device}")
+        
         self.best_score = float('inf')
         self.backbone_weight = backbone_weight
-        self.clash_weight = 100.0  # Force de la pénalité
-        self.target_bb_dist = 1.61
+        self.rsrnasp_weight = rsrnasp_weight
+        self.clash_weight = clash_weight
+        
+        # Paramètres physiques de rsRNASP
+        self.step_distance = 0.3
+        self.cutoff_short = 13.0
+        self.cutoff_long = 24.0
+        
         self.verbose = verbose
+        if self.verbose:
+            print(f"Utilisation du device : {self.device}")
 
-        # 1. Chargement des potentiels (définit sorted_types)
+        # 1. Chargement des potentiels
         self.load_dict_potentials()
         
         # 2. Chargement et préparation de la structure rigide
         self.convert_pdb_to_rigid_tensors(self.pdb_path)
 
+        # 3. Préparation des rayons de Van der Waals pour le Clash Stérique
         self.vdw_radii_map = self._get_vdw_radii()
-        # Préparation du tenseur des distances de contact (R_i + R_j)
         self.setup_clash_detection()
 
     def load_dict_potentials(self):
-        path = "potentials/matrice_dfire.dat"
-        if os.path.exists(path):
-            dict_pots = load_dfire_potentials(path)
-            self.convert_dict_to_tensor(dict_pots)
+        short_path = "potentials/short-ranged.potential"
+        long_path = "potentials/long-ranged.potential"
+        
+        if os.path.exists(short_path) and os.path.exists(long_path):
+            num_types, num_bins, dict_pots = load_rsrnasp_potentials(short_path, long_path)
+            
+            # Tenseur de forme : (2 états K, 85 types, 85 types, X bins de 0.3A)
+            self.potential_tensor = torch.zeros((2, num_types, num_types, num_bins), dtype=torch.float32).to(self.device)
+            
+            for (k_state, t1, t2, dist_bin), energy in dict_pots.items():
+                self.potential_tensor[k_state, t1, t2, dist_bin] = energy
+                
+            if self.verbose:
+                print(f"✅ Potentiels rsRNASP chargés (Types: {num_types}, Bins: {num_bins}, Step: {self.step_distance}Å).")
         else:
-            print(f"Fichier de potentiel non trouvé : {path}")
-
-    def convert_dict_to_tensor(self, dict_pots):
-        # Récupérer tous les types d'atomes uniques
-        all_types = set()
-        for t1, t2 in dict_pots.keys():
-            all_types.add(t1)
-            all_types.add(t2)
-        
-        self.sorted_types = sorted(list(all_types))
-        self.type_to_idx = {t: i for i, t in enumerate(self.sorted_types)}
-        num_types = len(self.sorted_types)
-        num_bins = len(next(iter(dict_pots.values())))
-        
-        # Création du tenseur (num_types, num_types, num_bins)
-        self.potential_tensor = torch.zeros((num_types, num_types, num_bins), dtype=torch.float32).to(self.device)
-        
-        for (t1, t2), values in dict_pots.items():
-            if t1 in self.type_to_idx and t2 in self.type_to_idx:
-                idx1 = self.type_to_idx[t1]
-                idx2 = self.type_to_idx[t2]
-                self.potential_tensor[idx1, idx2, :] = torch.tensor(values, dtype=torch.float32)
-                self.potential_tensor[idx2, idx1, :] = torch.tensor(values, dtype=torch.float32)
+            if self.verbose:
+                print(f"⚠️ Fichiers de potentiels rsRNASP introuvables, rsRNASP ignoré.")
+            self.potential_tensor = None
 
     def convert_pdb_to_rigid_tensors(self, pdb_path):
         ppdb = PandasPdb().read_pdb(pdb_path)
         df_atoms = ppdb.df['ATOM'].copy()
         
-        # Filtrage et typage DFIRE
-        df_atoms['dfire_type'] = df_atoms.apply(lambda row: get_dfire_type(row['atom_name'], row['residue_name']), axis=1)
-        self.df_filtered = df_atoms[df_atoms['dfire_type'] != -1].reset_index(drop=True)
-        
-        # Vérifier que les types existent dans notre dictionnaire de potentiels
-        # On ne garde que les atomes dont le type est connu dans DFIRE
-        mask_known = self.df_filtered['dfire_type'].isin(self.type_to_idx.keys())
-        self.df_filtered = self.df_filtered[mask_known].reset_index(drop=True)
+        # Filtrage et typage rsRNASP
+        df_atoms['rsrnasp_type'] = df_atoms.apply(lambda row: get_rsrnasp_type(row['residue_name'], row['atom_name']), axis=1)
+        self.df_filtered = df_atoms[df_atoms['rsrnasp_type'] != -1].reset_index(drop=True)
         
         raw_coords = torch.tensor(self.df_filtered[['x_coord', 'y_coord', 'z_coord']].values, dtype=torch.float32).to(self.device)
         res_ids = self.df_filtered['residue_number'].values
@@ -116,23 +113,21 @@ class FullAtomDFIREOptimizer:
                 first_idx = (self.df_filtered['residue_number'] == res).idxmax()
                 ref_coords_init[i] = raw_coords[first_idx]
 
-        # PARAMÈTRES OPTIMISABLES : 
+        # PARAMÈTRES OPTIMISABLES (Corps rigide)
         self.ref_coords = torch.nn.Parameter(ref_coords_init.contiguous())
         self.rot_angles = torch.nn.Parameter(torch.zeros((num_nucs, 3), dtype=torch.float32).to(self.device))
         
         # CONSTANTE : offsets internes
         self.offsets = raw_coords - ref_coords_init[self.atom_to_nuc_idx]
         
-        # Identification Backbone (pour la contrainte de distance O3'-P)
-        self.bb_i_idx, self.bb_j_idx = [], [] # O3'(i) et P(i+1)
-        self.p_curr_idx, self.p_next_idx = [], [] # P(i) et P(i+1)
-        self.c3_idx = [] # C3'(i)
+        # Identification Backbone
+        self.bb_i_idx, self.bb_j_idx = [], [] 
+        self.p_curr_idx, self.p_next_idx = [], [] 
+        self.c3_idx = [] 
 
         for i in range(len(unique_res) - 1):
             res_curr, res_next = unique_res[i], unique_res[i+1]
             
-            # On isole les atomes du résidu courant et suivant
-            # (Astuce : filtrer une seule fois par résidu est plus rapide)
             df_curr = self.df_filtered[self.df_filtered['residue_number'] == res_curr]
             df_next = self.df_filtered[self.df_filtered['residue_number'] == res_next]
             
@@ -141,17 +136,12 @@ class FullAtomDFIREOptimizer:
             idx_p_c = df_curr[df_curr['atom_name'] == "P"].index
             idx_p_n = df_next[df_next['atom_name'] == "P"].index
             
-            # 1. Liaison O3'(i) - P(i+1)
             if not idx_o3.empty and not idx_p_n.empty:
                 self.bb_i_idx.append(idx_o3[0])
                 self.bb_j_idx.append(idx_p_n[0])
-                
-            # 2. Virtual Bond P(i) - P(i+1)
             if not idx_p_c.empty and not idx_p_n.empty:
                 self.p_curr_idx.append(idx_p_c[0])
                 self.p_next_idx.append(idx_p_n[0])
-                
-            # 3. Pour l'angle C3'(i)-O3'(i)-P(i+1), on vérifie que les 3 existent
             if not idx_c3.empty and not idx_o3.empty and not idx_p_n.empty:
                 self.c3_idx.append(idx_c3[0])
         
@@ -161,39 +151,41 @@ class FullAtomDFIREOptimizer:
         self.p_next_idx = torch.tensor(self.p_next_idx, dtype=torch.long, device=self.device)
         self.c3_idx = torch.tensor(self.c3_idx, dtype=torch.long, device=self.device)
         
-        # Préparation des paires pour le calcul du score DFIRE
-        # Préparation des paires pour le calcul du score DFIRE
-        atom_types = torch.tensor([self.type_to_idx[t] for t in self.df_filtered['dfire_type']], dtype=torch.int32).to(self.device)
+        # Préparation des paires rsRNASP
+        atom_types = torch.tensor(self.df_filtered['rsrnasp_type'].values, dtype=torch.int32).to(self.device)
         n_atoms = len(self.df_filtered)
         i_idx, j_idx = torch.triu_indices(n_atoms, n_atoms, offset=1, device=self.device)
         
         res_tensor = torch.tensor(res_ids, dtype=torch.int32).to(self.device)
         sep = torch.abs(res_tensor[i_idx] - res_tensor[j_idx])
-        mask_inter = sep > 2
         
-        # On utilise int32 pour économiser de la mémoire GPU (supporte jusqu'à 2 milliards d'atomes)
+        # rsRNASP ignore les atomes du même nucléotide (sep == 0)
+        mask_inter = sep > 0
+        
         self.pair_i = i_idx[mask_inter].to(torch.int32)
         self.pair_j = j_idx[mask_inter].to(torch.int32)
+        self.sep = sep[mask_inter]
+        
+        # K_state: 0 pour court (1 à 4), 1 pour long (>= 5)
+        self.k_states = (self.sep >= 5).long()
         self.t1_vals = atom_types[self.pair_i]
         self.t2_vals = atom_types[self.pair_j]
 
-
     def _get_vdw_radii(self):
-        # Valeurs standards simplifiées pour l'ARN (en Angströms)
-        # On se base sur le premier caractère du type DFIRE (C, N, O, P)
         radii = {'C': 1.7, 'N': 1.55, 'O': 1.52, 'P': 1.8}
         vdw_list = []
-        for t in self.sorted_types:
-            element = t[0] # Récupère 'C', 'N', etc.
+        # Le format des types rsRNASP (ex: "AP", "AOP1", "GN1")
+        # L'élément atomique correspond presque toujours au deuxième caractère
+        for t in ATOM_TYPES_85:
+            element = t[1]
             vdw_list.append(radii.get(element, 1.7))
         return torch.tensor(vdw_list, dtype=torch.float32).to(self.device)
 
     def setup_clash_detection(self):
-        # On calcule la somme des rayons pour chaque paire possible
-        # r_sum[i, j] = radius_i + radius_j
-        r = self.vdw_radii_map[self.t1_vals.long()]
+        r_i = self.vdw_radii_map[self.t1_vals.long()]
         r_j = self.vdw_radii_map[self.t2_vals.long()]
-        self.min_dist_threshold = (r + r_j) * 0.85
+        # Distance minimale de VDW autorisée (tolérance de 15% de chevauchement)
+        self.min_dist_threshold = (r_i + r_j) * 0.85
 
     def get_rotation_matrices(self):
         cos_a, sin_a = torch.cos(self.rot_angles[:, 0]), torch.sin(self.rot_angles[:, 0])
@@ -220,13 +212,10 @@ class FullAtomDFIREOptimizer:
 
     def calculate_detailed_scores(self, current_full_coords):
         n_pairs = self.pair_i.size(0)
-        chunk_size = 5000000 # On traite par blocs de 5 millions de paires pour éviter l'OOM CUDA
+        chunk_size = 5000000 # Évite les Out Of Memory sur GPU
         
-        dfire_score = torch.tensor(0.0, device=self.device)
-        
-        max_dist = 19.6
-        step = 0.7
-        num_bins = self.potential_tensor.size(2)
+        rsrnasp_score = torch.tensor(0.0, device=self.device)
+        max_idx = self.potential_tensor.size(3) - 1
         
         for start_idx in range(0, n_pairs, chunk_size):
             end_idx = min(start_idx + chunk_size, n_pairs)
@@ -236,55 +225,65 @@ class FullAtomDFIREOptimizer:
             
             dists = torch.norm(p1 - p2, dim=1) + 1e-8
             
-            # Interpolation linéaire pour le score
-            d_scaled = dists / step
-            d_clamp = torch.clamp(d_scaled, 0.0, float(num_bins - 1))
+            # Échelle par rapport à la taille des bins rsRNASP (0.3 Å)
+            d_scaled = dists / self.step_distance
+            d_clamp = torch.clamp(d_scaled, 0.5, float(max_idx - 1.5))
             
             d0 = torch.floor(d_clamp).long()
-            d1 = torch.clamp(d0 + 1, max=num_bins - 1)
+            d1 = d0 + 1
             alpha = d_clamp - d0.float()
             
-            t1 = self.t1_vals[start_idx:end_idx]
-            t2 = self.t2_vals[start_idx:end_idx]
+            im1 = torch.clamp(d0 - 1, min=0)
+            i2 = torch.clamp(d1 + 1, max=max_idx)
             
-            energy0 = self.potential_tensor[t1.long(), t2.long(), d0]
-            energy1 = self.potential_tensor[t1.long(), t2.long(), d1]
+            k_st = self.k_states[start_idx:end_idx]
+            t1 = self.t1_vals[start_idx:end_idx].long()
+            t2 = self.t2_vals[start_idx:end_idx].long()
             
-            interp_energy = (1 - alpha) * energy0 + alpha * energy1
+            p0 = self.potential_tensor[k_st, t1, t2, im1]
+            p1_val = self.potential_tensor[k_st, t1, t2, d0]
+            p2_val = self.potential_tensor[k_st, t1, t2, d1]
+            p3 = self.potential_tensor[k_st, t1, t2, i2]
             
-            # Masque pour les distances > 19.6
-            valid_mask = (dists < max_dist).float()
-            dfire_score = dfire_score + torch.sum(interp_energy * valid_mask)
+            # Interpolation Catmull-Rom (Spline Cubique)
+            interp_energy = 0.5 * (
+                (2 * p1_val) + (-p0 + p2_val) * alpha +
+                (2 * p0 - 5 * p1_val + 4 * p2_val - p3) * alpha**2 +
+                (-p0 + 3 * p1_val - 3 * p2_val + p3) * alpha**3
+            )
+            
+            # Cutoffs dynamiques (13 Å ou 24 Å)
+            cutoffs = torch.where(k_st == 0, 
+                                  torch.tensor(self.cutoff_short, device=self.device), 
+                                  torch.tensor(self.cutoff_long, device=self.device))
+            
+            cutoff_weights = torch.sigmoid(2.0 * (cutoffs - dists))
+            rsrnasp_score = rsrnasp_score + torch.sum(interp_energy * cutoff_weights)
 
-        # --- 1. Clash Stérique (Utilisation des rayons VDW préparés) ---
+        # 1. Répulsion Stérique VDW
         p_i, p_j = current_full_coords[self.pair_i.long()], current_full_coords[self.pair_j.long()]
         dist_pairs = torch.norm(p_i - p_j, dim=1)
 
-        # Utilise le seuil dynamique calculé dans setup_clash_detection
-        thresholds = self.min_dist_threshold # Déjà sur le bon device
+        thresholds = self.min_dist_threshold
         clash_penalty = torch.sum(torch.clamp(thresholds - dist_pairs, min=0.0)**2) * self.clash_weight
-        
 
-        # --- 2. Robustesse Backbone (Liaisons + Angles + P-P) ---
+        # 2. Robustesse Backbone
         bb_penalty = torch.tensor(0.0, device=self.device)
         if len(self.bb_i_idx) > 0:
-            # A. Liaison O3'-P (1.61 A)
             p_o3, p_p = current_full_coords[self.bb_i_idx], current_full_coords[self.bb_j_idx]
             dist_o3p = torch.norm(p_o3 - p_p, dim=1)
             bb_penalty += torch.sum((dist_o3p - 1.61)**2) * self.backbone_weight
 
-            # B. Virtual Bond P-P (5.9 A) - Selon modèle SOP-RNA
             if len(self.p_curr_idx) > 0:
                 dist_pp = torch.norm(current_full_coords[self.p_curr_idx] - current_full_coords[self.p_next_idx], dim=1)
                 bb_penalty += torch.sum((dist_pp - 5.9)**2) * (self.backbone_weight * 0.5)
 
-            # C. Angle C3'-O3'-P (cible ~120 deg soit cos = -0.5)
             p_c3 = current_full_coords[self.c3_idx]
             v1, v2 = p_c3 - p_o3, p_p - p_o3
             cos_angle = torch.sum(v1*v2, dim=1) / (torch.norm(v1, dim=1)*torch.norm(v2, dim=1) + 1e-8)
             bb_penalty += torch.sum((cos_angle - (-0.5))**2) * 20.0
 
-        return dfire_score, bb_penalty, clash_penalty
+        return rsrnasp_score * self.rsrnasp_weight, bb_penalty, clash_penalty
 
     def run_optimization(self):
         """
@@ -297,7 +296,7 @@ class FullAtomDFIREOptimizer:
         self.best_score = float('inf')
 
         if self.verbose:
-            print(f"🚀 Début de l'optimisation DFIRE dynamique...")
+            print(f"🚀 Début de l'optimisation rsRNASP dynamique...")
             print(f"Nombre de paires d'atomes à traiter : {self.pair_i.size(0):,}")
         
         current_noise_c = self.noise_coords
@@ -323,7 +322,10 @@ class FullAtomDFIREOptimizer:
                 score, bb_penalty, clash_penalty = self.calculate_detailed_scores(coords)
                 loss = score + bb_penalty + clash_penalty
 
-                loss.backward() 
+                loss.backward()
+                
+                # Gradient clipping pour la stabilité (essentiel avec les splines cubiques)
+                torch.nn.utils.clip_grad_norm_([self.ref_coords, self.rot_angles], max_norm=5.0)
                 optimizer.step()
 
                 current_loss = loss.item()
@@ -338,9 +340,8 @@ class FullAtomDFIREOptimizer:
                 prev_loss = current_loss
                 epoch += 1
 
-                if epoch % 100 == 0:
-                    if self.verbose:
-                        print(f"  Iteration {epoch:4d} | Total: {current_loss:.4f} | DFIRE: {score.item():.4f} | BB: {bb_penalty.item():.4f} | Clash: {clash_penalty.item():.4f}")
+                if (epoch % 100 == 0) and self.verbose:
+                    print(f"  Iteration {epoch:4d} | Total: {current_loss:.4f} | rsRNASP: {score.item():.4f} | BB: {bb_penalty.item():.2f} | Clash: {clash_penalty.item():.2f}")
                 
                 if patience_counter >= self.patience_locale:
                     if self.verbose:
@@ -383,7 +384,9 @@ class FullAtomDFIREOptimizer:
                 optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
                 torch.cuda.empty_cache()
 
-        print("\n Optimisation terminée.")
+        if self.verbose:
+            print("\n Optimisation terminée.")
+        
         with torch.no_grad():
             self.ref_coords.copy_(best_ref_coords)
             self.rot_angles.copy_(best_rot_angles)
@@ -397,4 +400,7 @@ class FullAtomDFIREOptimizer:
         out_ppdb.df['ATOM'][['x_coord', 'y_coord', 'z_coord']] = final_full_coords
         out_ppdb.df["ATOM"]["chain_id"] = "A"
         out_ppdb.to_pdb(path=self.output_path)
-        print(f"Fichier sauvegardé : {self.output_path}")
+        
+        if self.verbose:
+            print(f"Fichier sauvegardé : {self.output_path}")
+            print(f"Meilleur score : {self.best_score:.4f}")
