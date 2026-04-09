@@ -58,5 +58,5 @@ Use the provided shell scripts for standard runs:
 
 If you use RASP, DFIRE, or rsRNASP potentials, please cite their respective authors:
 - **RASP**: Capriotti et al., *Bioinformatics*, 2011. [DOI: 10.1093/bioinformatics/btr093](https://doi.org/10.1093/bioinformatics/btr093)
-- **DFIRE-RNA**: Zhang et al., *Protein Science*, 2010. [DOI: 10.1002/pro.422](https://doi.org/10.1002/pro.422)
+- **DFIRE-RNA**: Zhang et al., *Journal of Computational Biology*, 2020. [DOI: 10.1089/cmb.2019.0251](https://doi.org/10.1089/cmb.2019.0251)
 - **rsRNASP**: Tan et al., *Biophysical Journal*, 2021. [DOI: 10.1016/j.bpj.2021.11.016](https://doi.org/10.1016/j.bpj.2021.11.016)
