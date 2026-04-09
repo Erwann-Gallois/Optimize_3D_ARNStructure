@@ -1,21 +1,21 @@
-# Utilitaires et Interface avec AmberTools (`fonction.py`)
+# Utilities and Interface with AmberTools (`fonction.py`)
 
-Le fichier `fonction.py` sert de boite à outils (Wrapper/Helpers). Toutes les étapes précédant physiquement l'optimisation PyTorch sont réalisées ici.
+The `fonction.py` file serves as a toolbox (Wrapper/Helpers). All steps physically preceding the PyTorch optimization are performed here.
 
-## Préparation de la séquence : La génération (AmberTools - tleap)
-Étant donné une séquence primaire textuelle (Ex: `AAGCU`), il faut un squelette 3D canonique et rigide pur à soumettre à notre optimiseur C3'/Full-Atom.
-- `generer_arn_droit(sequence)` : Utilise les APIs logicielles du standard académique de bio-molécule dynamique **AmberTools** (logiciel indispensable en dépendance de la machine de test, souvent géré par environnement virtuel Conda `Stage`).
-  - La fonction écrit dynamiquement un script d'automatisation nommé `instructions_tleap.in` avec les paramètres du système Amber (champ de forces `leaprc.RNA.OL3`). 
-  - La structure longue est fragmentée de 50 en 50 si nécessaire et insérée via le module CLI en sous-processus python (`subprocess.run()`).
-  - L'output 3D généré est enregistré et `leap.log` ainsi que le fichier temporaire de script sont écrasés (Clean-up de tleap).
-- `enlever_hydrogene()` : RASP et DFIRE ne prennent traditionnellement pas en paramètre les hydrogènes, et les simuler pendant la descente de gradiants multiplierait considérablement par trois la perte mémoire (RAM/GPU). On filtre le `.pdb` Amber avec un masque logique Pandas.
+## Sequence Preparation: Generation (AmberTools - `tleap`)
+Given a primary textual sequence (Ex: `AAGCU`), a canonical and rigid 3D backbone is needed to be submitted to our C3'/Full-Atom optimizer.
+- `generer_arn_droit(sequence)`: Uses the standard academic dynamic bio-molecule software APIs **AmberTools** (indispensable dependency, often managed by the Conda `Stage` environment).
+  - The function dynamically writes an automation script named `instructions_tleap.in` with the Amber system parameters (force field `leaprc.RNA.OL3`).
+  - Longer structures are fragmented every 50 residues if necessary and inserted via the CLI module in a Python subprocess (`subprocess.run()`).
+  - The generated 3D output is saved, and `leap.log` as well as the temporary script file are overwritten (AmberTools clean-up).
+- `enlever_hydrogene()`: RASP and DFIRE traditionally do not take hydrogens as input, and simulating them during gradient descent would significantly increase memory consumption (RAM/GPU). The Amber `.pdb` is filtered using a logical Pandas mask.
 
-## Nettoyage des Artefacts
-- `fix_amber_pdb()` : `tleap` produit de temps en temps des erreurs de fin de chaine d'acide nucléique, ne générant notamment pas d'atomes critiques terminaux du squelette phosphodiester (`OP3`). La fonction lit, avec la bibliothèque lourde structurelle **BioPython**, toute arborescence du `PDB`, parse et recrée si besoin un noeud géométrique pour l'atome en décalage de son frère `OP2`. Ce contournement évite de casser l'architecture paramétrique par atome manquant. 
+## Artifact Cleanup
+- `fix_amber_pdb()`: `tleap` occasionally produces end-of-chain artifacts in nucleic acids, specifically failing to generate critical terminal phosphodiester backbone atoms (`OP3`). The function uses the **BioPython** structural library to parse the `PDB` tree and recreate a geometric node for the atom if missing, using the neighboring `OP2` as a reference. This workaround prevents the parametric architecture from breaking due to missing atoms.
 
-## Visualisation
-- `view_structure()` : Raccourci vers [NglView](https://github.com/nglviewer/nglview), particulièrement utile sur des environnements iPython (Notebook Python) tels que `test_alphafold.ipynb`. Elle paramètre l'affichage de "bâton" pour le squelette complet (`licorice`) et applique une surbrillance de type `spacefill` couleur `orange` directement focalisée sur les atomes `_P` (Le phosphore, véritable "noeud vertébral" du backbone ARN).
+## Visualization
+- `view_structure()`: Shortcut to [NglView](https://github.com/nglviewer/nglview), particularly useful in iPython environments (Jupyter Notebooks) such as `test_alphafold.ipynb`. It configures the display to show the full skeleton as sticks (`licorice`) and applies a `spacefill` highlight in `orange` focused on the `P` atoms (Phosphorus, the vertebral node of the RNA backbone).
 
-## Workflow Initial complet
-- `generer_first_structure()` est simplement la consolidation encapsulante de `generer_arn_droit` $\rightarrow$ `enlever_hydrogene` $\rightarrow$ `fix_amber_pdb()`. 
-Les fichiers passés par cette pipeline atterrissent historiquement dans le dossier local `/fichier_arn/`.
+## Full Initial Workflow
+- `generer_first_structure()` is simply the consolidating wrapper of `generer_arn_droit` $\rightarrow$ `enlever_hydrogene` $\rightarrow$ `fix_amber_pdb()`.
+Files passed through this pipeline historically land in the local `/fichier_arn/` folder.

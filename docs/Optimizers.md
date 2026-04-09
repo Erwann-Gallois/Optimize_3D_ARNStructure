@@ -1,49 +1,49 @@
-# Les Optimiseurs (Dossier `classe/`)
+# The Optimizers (Folder `classe/`)
 
-Le projet repose sur deux philosophies d'optimisation distinctes, toutes deux implémentées avec PyTorch pour le calcul tensoriel et l'autodifférenciation.
+The project is built around two distinct optimization philosophies, both implemented with PyTorch for tensor calculations and autodifferentiation.
 
-## 1. Modèle de Perles : `BeadSpringOptimizer.py`
+## 1. Bead-Spring Model: `BeadSpringOptimizer.py`
 
-Contrairement à une approche tout-atome, ce modèle réduit chaque nucléotide à une perle unique (généralement l'atome **C3'**). C'est un modèle de physique mésoscopique extrêmement rapide.
+Unlike an all-atom approach, this model reduces each nucleotide to a single bead (generally the **C3'** atom). It's an extremely fast mesoscopic physics model.
 
-### A. Potentiels de Cohésion (Physique)
-Pour maintenir l'intégrité de la chaîne d'ARN sans structure atomique complète, on utilise deux forces classiques :
-1. **WCA (Weeks-Chandler-Andersen)** : Une version purement répulsive du potentiel de Lennard-Jones. Elle empêche les perles de s'interpénétrer (volume exclu).
-2. **FENE (Finitely Extensible Nonlinear Elastic)** : Un ressort non-linéaire qui lie les perles entre elles. Il empêche la chaîne de se briser tout en limitant l'extension maximale des liaisons.
+### A. Cohesion Potentials (Physics)
+To maintain the integrity of the RNA chain without a full atomic structure, two classical forces are used:
+1. **WCA (Weeks-Chandler-Andersen)**: A purely repulsive version of the Lennard-Jones potential. It prevents beads from interpenetrating (excluded volume).
+2. **FENE (Finitely Extensible Nonlinear Elastic)**: A non-linear spring that connects beads together. It prevents the chain from breaking while limiting the maximal extension of bonds.
 
-### B. Potentiel Statistique
-L'énergie globale est complétée par un score issu de **RASP** ou **DFIRE-RNA**, calculé uniquement sur les distances entre les perles sélectionnées.
-- **Classes dérivées** : `BeadSpringRASPOptimizer` et `BeadSpringDFIREOptimizer`.
-
----
-
-## 2. Modèle de Corps Rigides : `FullAtomOptimizer.py`
-
-Cette approche traite chaque nucléotide comme une entité rigide indéformable. C'est l'approche privilégiée pour un raffinement de haute précision.
-
-### A. Paramétrage Géométrique (6 DOF)
-Chaque nucléotide possède 6 degrés de liberté optimisables :
-- **Translation (3D)** : Position du centre de référence (`ref_coords`).
-- **Rotation (3D)** : Orientation spatiale via des angles d'Euler (`rot_angles`).
-
-La position de chaque atome est reconstruite par : $Coords = Ref\_Coords + R \times Offsets$, où les offsets sont les positions relatives internes fixes des atomes du nucléotide.
-
-### B. Contraintes du Squelette
-Comme les nucléotides sont des corps rigides séparés, une pénalité de "backbone" est appliquée pour forcer l'atome **O3'** du nucléotide $i$ à rester proche de l'atome **P** du nucléotide $i+1$ (distance cible ~1.6 Å).
+### B. Statistical Potential
+The total energy is completed by a score from **RASP**, **DFIRE-RNA**, or **rsRNASP**, calculated solely on distances between the selected beads.
+- **Derived Classes**: `BeadSpringRASPOptimizer`, `BeadSpringDFIREOptimizer`, and `BeadSpringRsRNASPOptimizer`.
 
 ---
 
-## 3. Algorithmes de Résolution
+## 2. Rigid Body Model: `FullAtomOptimizer.py`
 
-Le projet supporte plusieurs algorithmes de descente :
-- **Adam** : Robuste pour les larges oscillations et la phase exploratoire.
-- **L-BFGS** : Algorithme de quasi-Newton très efficace pour converger précisément vers le minimum local une fois la structure globalement correcte.
+This approach treats each nucleotide as a rigid, undeformable entity. It's the preferred approach for high-precision refinement.
+
+### A. Geometric Parametrization (6 DOF)
+Each nucleotide has 6 optimizable degrees of freedom:
+- **Translation (3D)**: Position of the reference center (`ref_coords`).
+- **Rotation (3D)**: Spatial orientation via Euler angles (`rot_angles`).
+
+The position of each atom is reconstructed by: $Coords = Ref\_Coords + R \times Offsets$, where offsets are the fixed internal relative positions of the nucleotide's atoms.
+
+### B. Backbone Constraints
+Since nucleotides are separate rigid bodies, a "backbone" penalty is applied to force the **O3'** atom of nucleotide $i$ to remain close to the **P** atom of nucleotide $i+1$ (target distance ~1.6 Å).
+
+---
+
+## 3. Optimization Algorithms
+
+The project supports several descent algorithms:
+- **Adam**: Robust for large oscillations and exploratory phases.
+- **L-BFGS**: Very efficient quasi-Newton algorithm for precise convergence to the local minimum once the structure is globally correct.
 
 ### Basin Hopping (Shake)
-Pour échapper aux minima locaux, l'optimisation est découpée en **Cycles**. À chaque nouveau cycle, un bruit contrôlé (secousse) est injecté dans les coordonnées et les angles pour explorer de nouvelles configurations.
+To escape from local minima, the optimization is segmented into **Cycles**. At each new cycle, a controlled noise (shake) is injected into the coordinates and angles to explore new configurations.
 
 ---
 
-## 4. Intégration des Scores (RASP & DFIRE)
+## 4. Score Integration (RASP, DFIRE & rsRNASP)
 
-Les classes finales (ex: `FullAtomDFIREOptimizer`) combinent ces modèles physiques avec les matrices de potentiels. Elles utilisent l'**interpolation linéaire** pour rendre les grilles d'énergie discrètes (bins) différentiables, permettant à PyTorch de calculer les gradients nécessaires au déplacement des nucléotides.
+The final classes (e.g., `FullAtomRsRNASPOptimizer`) combine these physical models with the potential matrices. They use **linear interpolation** to make discrete energy grids (bins) differentiable, allowing PyTorch to calculate the gradients necessary to move the nucleotides.

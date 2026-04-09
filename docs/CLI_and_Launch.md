@@ -1,50 +1,53 @@
-# Interfaces et Lancement de l'Optimisation
+# Interfaces and Launching Optimization
 
-Le projet propose deux points d'entrée principaux selon le modèle d'optimisation souhaité.
+The project offers two main entry points depending on the desired optimization model.
 
-## 1. Points d'entrée (Python)
+## 1. Entry Points (Python)
 
 ### `main_bead_springs.py`
-Optimisation via le modèle **Bead-Spring** (chaîne de perles).
+Optimization via the **Bead-Spring** model (chain of beads).
 ```bash
-python main_bead_springs.py -s ACGU --score dfire --epochs 50 --cycles 20
+python main_bead_springs.py -s ACGU --score rsRNASP --epochs 100 --cycles 5
 ```
 
 ### `main_full_atom.py`
-Optimisation via le modèle **Full-Atom** (corps rigides).
+Optimization via the **Full-Atom** model (rigid bodies).
 ```bash
 python main_full_atom.py -f sequence.fasta --score rasp --lr 0.2
 ```
 
-## 2. Arguments de la ligne de commande (CLI)
+## 2. Command Line Arguments (CLI)
 
-Les deux scripts partagent des arguments communs, mais possèdent aussi des options spécifiques.
+Both scripts share common arguments but also have specific options.
 
-### Arguments communs :
-- `-s`, `--sequence` : Séquence ARN directe (ex: `ACGU`).
-- `-f`, `--fasta` : Chemin vers un fichier FASTA.
-- `--score {rasp, dfire}` : Fonction de score statistique à utiliser (défaut: `dfire`).
-- `-o`, `--output` : Chemin du fichier PDB de sortie.
-- `--epochs` : Nombre d'époques par cycle d'optimisation (défaut: 50).
-- `--cycles` : Nombre de cycles de "basin hopping" (défaut: 20).
-- `--lr` : Taux d'apprentissage (Learning Rate, défaut: 0.2).
-- `--noise-coords` : Intensité du bruit ajouté aux coordonnées à chaque cycle (défaut: 0.5).
-- `-v`, `--verbose` : Active l'affichage détaillé pendant l'optimisation.
+### Common Arguments:
+- `-s`, `--sequence`: Direct RNA sequence (ex: `ACGU`).
+- `-f`, `--fasta`: Path to a FASTA file.
+- `--score {rasp, dfire, rsRNASP}`: Statistical scoring function to use (default: `dfire`).
+- `-o`, `--output`: Path of the output PDB file.
+- `--epochs`: Number of epochs per optimization cycle (default: 50).
+- `--cycles`: Number of "basin hopping" cycles (default: 20).
+- `--lr`: Learning rate (default: 0.2).
+- `--noise-coords`: Intensity of the noise added to coordinates at each cycle (default: 0.5).
+- `-v`, `--verbose`: Enables detailed display during optimization.
+- `--cif`: Export the final structure in .cif format.
 
-### Spécifiques à Bead-Spring :
-- `--k` : Constante de raideur des ressorts (défaut: 40.0).
-- `--l0` : Distance d'équilibre entre les perles (défaut: 5.5).
-- `--bead-atom` : Atome utilisé comme centre de la perle (défaut: `C3'`).
+### Specific to Bead-Spring:
+- `--k`: Spring stiffness constant (default: 40.0).
+- `--l0`: Equilibrium distance between beads (default: 5.5).
+- `--bead-atom`: Atom used as the center of the bead (default: `C3'`).
 
-### Spécifiques à Full-Atom :
-- `--backbone-weight` : Poids de la pénalité sur la connectivité du squelette (défaut: 100).
-- `--noise-angles` : Intensité du bruit ajouté aux angles de rotation à chaque cycle (défaut: 0.2).
+### Specific to Full-Atom:
+- `--backbone-weight`: Weight of the penalty for backbone connectivity (default: 100).
+- `--noise-angles`: Intensity of the noise added to rotation angles at each cycle (default: 0.2).
 
-## 3. Scripts de lancement (Bash)
+## 3. Launch Scripts (Bash)
 
-Pour faciliter l'exécution sans mémoriser tous les arguments, deux scripts assistants sont fournis :
-- **`launch_bead_springs.sh`** : Prépare une exécution optimisée pour le modèle de perles.
-- **`launch_full_atom.sh`** : Prépare une exécution optimisée pour le modèle atomique complet.
+To simplify execution without memorizing all arguments, several assistant scripts are provided:
+- **`launch_bead_springs.sh`**: Prepares an optimized run for the bead model.
+- **`launch_full_atom.sh`**: Prepares an optimized run for the full-atom model.
+- **`launch_all_scores_bead_springs.sh`**: Sequentially runs optimizations with all scores for the bead model.
+- **`launch_all_scores_full_atom.sh`**: Sequentially runs optimizations with all scores for the full-atom model.
+- **`launch_opt.sh`**: Interactive script to choose the model and scoring function.
 
-Ces scripts gèrent automatiquement la création des dossiers `fichier_arn/` et `resultat/` si nécessaire.
-
+These scripts automatically manage the creation of `fichier_arn/` and `resultat/` folders if necessary.

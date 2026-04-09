@@ -1,23 +1,32 @@
-# Le Parsing des Potentiels Statistiques (Énergies)
+# Parsing Statistical Potentials (Energies)
 
-Les algorithmes d'optimisation utilisent des **champs de forces statistiques** (potentiels empiriques). Ces scores cherchent à reproduire les repliements vus dans la nature en observant la géométrie des structures connues dans la PDB.
+The optimization algorithms use **statistical force fields** (empirical potentials). These scores seek to reproduce the foldings seen in nature by observing the geometry of known structures in the PDB.
 
-Le projet intègre les matrices de potentiels **DFIRE-RNA** et **RASP**.
+The project integrates the potential matrices **DFIRE-RNA**, **RASP**, and **rsRNASP**.
 
 ### 1. `parse_dfire_potentials.py`
-Le module DFIRE calcule les énergies d'interaction basées sur une distance normalisée par un état de référence (gaz parfait de molécules).
-- **`load_dfire_potentials()`** : Charge la matrice `matrice_dfire.dat` depuis le dossier `potentials/`.
-- **Types d'atomes** : DFIRE définit des types précis combinant le nom du résidu (A, U, C, G) et le nom de l'atome (ex: `G_N1`, `A_C8`).
-- **Interpolation** : Pour rendre le potentiel différentiable (essentiel pour la descente de gradient), le code utilise une **interpolation linéaire** entre les "bins" de distance (0.5 Å). Cela permet à PyTorch de calculer un gradient continu même entre deux valeurs discrètes de la matrice.
+The DFIRE module calculates interaction energies based on a distance normalized by a reference state (finite-ideal-gas).
+- **`load_dfire_potentials()`**: Loads the `matrice_dfire.dat` matrix from the `potentials/` folder.
+- **Atom Types**: DFIRE defines precise types combining the residue name (A, U, C, G) and the atom name (e.g., `G_N1`, `A_C8`).
+- **Interpolation**: To make the potential differentiable (essential for gradient descent), the code uses **linear interpolation** between distance bins (0.5 Å). This allows PyTorch to calculate a continuous gradient even between two discrete values of the matrix.
 
 ### 2. `parse_rasp_potentials.py`
-Le potentiel RASP est plus complexe et prend en compte la séparation séquentielle entre les résidus.
-- **`load_rasp_potentials()`** : Charge les fichiers d'énergie RASP et construit un tenseur à 4 dimensions : `[séparation_k, type_A, type_B, distance]`.
-- **Séparation Séquentielle** : L'énergie varie selon que les nucléotides sont proches ou éloignés dans la séquence (6 catégories de 0 à >4).
-- **Types RASP** : Utilise 23 types d'atomes spécifiés par le modèle original.
-- **Modularité** : Le parser supporte à la fois le mode "Full-Atom" (tous les types) et le mode "C3'" (uniquement l'atome de perle), permettant son utilisation dans les deux modèles d'optimisation.
+The RASP potential is more complex and takes into account the sequential separation between residues.
+- **`load_rasp_potentials()`**: Loads RASP energy files and builds a 4D tensor: `[separation_k, type_A, type_B, distance]`.
+- **Sequential Separation**: The energy varies depending on whether the nucleotides are close or distant in the sequence (6 categories from 0 to >4).
+- **RASP Types**: Uses 23 atom types specified by the original model.
+- **Modularity**: The parser supports both "Full-Atom" mode (all types) and "C3'" mode (only the bead atom), allowing its use in both optimization models.
 
-### 3. Intégration dans les Optimiseurs
-Dans les classes d'optimisation (dossier `classe/`), ces potentiels sont convertis en **Tenseurs PyTorch**.
-- Les calculs de distance sont vectorisés pour être exécutés massivement sur GPU.
-- Des techniques de **"Capping"** (troncature) sont appliquées pour ignorer les interactions au-delà d'une certaine distance (typiquement 20 Å), optimisant ainsi les performances.
+### 3. `parse_rsrnasp_potentials.py`
+The **rsRNASP** (residue-specific statistical potential) is a recent approach (2021) that uses a fine discretization of atomic geometry.
+- **`load_rsrnasp_potentials()`**: Loads the `short-ranged.potential` and `long-ranged.potential` files.
+- **Atom Types**: rsRNASP defines **85 unique atom types** (22 for A, 20 for U, 20 for C, 23 for G), covering all heavy atoms of the structure.
+- **Sequential Reach**: Unlike RASP which has 6 categories, rsRNASP simplifies into two states:
+    - **Short-range**: $|i-j| \le 4$
+    - **Long-range**: $|i-j| \ge 5$
+- **Performance**: Calculations are optimized for PyTorch tensors, allowing rapid evaluation despite the high number of atom types.
+
+### 4. Integration into Optimizers
+In the optimization classes (folder `classe/`), these potentials are converted into **PyTorch Tensors**.
+- Distance calculations are vectorized to be executed massively on GPU.
+- **Capping** techniques (truncation) are applied to ignore interactions beyond a certain distance (typically 20 Å for RASP/DFIRE, 24 Å for rsRNASP), optimizing performance.
