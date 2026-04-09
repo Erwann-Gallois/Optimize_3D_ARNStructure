@@ -27,23 +27,8 @@ conda activate Stage
 
 ## 💻 Usage
 
-### 1. Bead-Spring Optimization
-Optimize a simplified representation of RNA:
 ```bash
-python main_bead_springs.py --sequence GGGAAACCC --score dfire --epochs 50 --cycles 10
-```
-
-### 2. Full-Atom Optimization
-Refine all atoms using rigid-body transformations:
-```bash
-python main_full_atom.py --fasta example.fasta --score rasp --lr 0.1
-```
-
-### 3. Launch Scripts
-Use the provided shell scripts for standard runs:
-```bash
-./launch_bead_springs.sh
-./launch_full_atom.sh
+./launch_opt.sh
 ```
 
 ## 🏗 Project Structure
