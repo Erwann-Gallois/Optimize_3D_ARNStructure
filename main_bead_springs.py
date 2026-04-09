@@ -36,6 +36,7 @@ def main():
     parser.add_argument("--l0", type=float, default=5.5, help="Equilibrium length (default: 5.5)")
     parser.add_argument("--bead-atom", type=str, default="C3'", help="Atom to use as bead (default: C3')")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output during optimization")
+    parser.add_argument("--cif", action="store_true", help="Export the final structure in .cif format")
     args = parser.parse_args()
 
     # 3. Optimizer selection
@@ -71,6 +72,7 @@ def main():
             min_delta=args.min_delta,
             taux_refroidissement=args.taux_refroidissement,
             bruit_min=args.bruit_min,
+            export_cif=args.cif
         )
 
     # 4. Optimization run

@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from biopandas.pdb import PandasPdb
 from parse_dfire_potentials import load_dfire_potentials, get_dfire_type
+from Bio.PDB import PDBParser, MMCIFIO
 
 class FullAtomDFIREOptimizer:
     def __init__(
@@ -19,8 +20,8 @@ class FullAtomDFIREOptimizer:
         patience_locale=100, 
         min_delta=1e-4, 
         patience_globale=5, 
-        taux_refroidissement=0.85, 
-        bruit_min=0.01
+        bruit_min=0.01,
+        export_cif=False
     ):
         if not os.path.exists(pdb_path):
             raise FileNotFoundError(f"The PDB file {pdb_path} does not exist.")
@@ -36,6 +37,7 @@ class FullAtomDFIREOptimizer:
         self.patience_globale = patience_globale
         self.taux_refroidissement = taux_refroidissement
         self.bruit_min = bruit_min
+        self.export_cif = export_cif
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
         self.best_score = float('inf')
@@ -328,6 +330,10 @@ class FullAtomDFIREOptimizer:
 
                 current_loss = loss.item()
 
+                if current_loss < self.best_score:
+                    self.best_score = current_loss
+                    best_ref_coords.copy_(self.ref_coords.detach())
+                    best_rot_angles.copy_(self.rot_angles.detach())
                 # Condition d'arrêt local (ΔE)
                 delta_loss = abs(prev_loss - current_loss)
                 if delta_loss < self.min_delta:
@@ -397,4 +403,24 @@ class FullAtomDFIREOptimizer:
         out_ppdb.df['ATOM'][['x_coord', 'y_coord', 'z_coord']] = final_full_coords
         out_ppdb.df["ATOM"]["chain_id"] = "A"
         out_ppdb.to_pdb(path=self.output_path)
-        print(f"File saved: {self.output_path}")
+        if self.verbose:
+            print(f"File saved: {self.output_path}")
+
+        if self.export_cif:
+            self.save_as_cif(self.output_path)
+
+    def save_as_cif(self, pdb_path):
+        """Converts a PDB file to CIF format using BioPython."""
+        if not os.path.exists(pdb_path):
+            if self.verbose:
+                print(f"Error: File {pdb_path} not found for CIF export.")
+            return
+        
+        cif_path = pdb_path.replace(".pdb", ".cif")
+        parser = PDBParser(QUIET=True)
+        structure = parser.get_structure("result", pdb_path)
+        io = MMCIFIO()
+        io.set_structure(structure)
+        io.save(cif_path)
+        if self.verbose:
+            print(f"Structure also saved in CIF format: {cif_path}")

@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import pandas as pd
 from biopandas.pdb import PandasPdb
+from Bio.PDB import PDBParser, MMCIFIO
 
 # Importation du parseur spécifique pour rsRNASP
 from parse_rsrnasp_potentials import load_rsrnasp_potentials, get_rsrnasp_type, ATOM_TYPES_85
@@ -24,7 +25,8 @@ class FullAtomRsRNASPOptimizer:
         min_delta=1e-4, 
         patience_globale=5, 
         taux_refroidissement=0.85, 
-        bruit_min=0.01
+        bruit_min=0.01,
+        export_cif=False
     ):
         if not os.path.exists(pdb_path):
             raise FileNotFoundError(f"The PDB file {pdb_path} does not exist.")
@@ -40,6 +42,7 @@ class FullAtomRsRNASPOptimizer:
         self.patience_globale = patience_globale
         self.taux_refroidissement = taux_refroidissement
         self.bruit_min = bruit_min
+        self.export_cif = export_cif
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         self.best_score = float('inf')
@@ -330,6 +333,11 @@ class FullAtomRsRNASPOptimizer:
 
                 current_loss = loss.item()
 
+                if current_loss < self.best_score:
+                    self.best_score = current_loss
+                    best_ref_coords.copy_(self.ref_coords.detach())
+                    best_rot_angles.copy_(self.rot_angles.detach()) 
+                
                 # Condition d'arrêt local (ΔE)
                 delta_loss = abs(prev_loss - current_loss)
                 if delta_loss < self.min_delta:
@@ -404,3 +412,22 @@ class FullAtomRsRNASPOptimizer:
         if self.verbose:
             print(f"File saved: {self.output_path}")
             print(f"Best score: {self.best_score:.4f}")
+
+        if self.export_cif:
+            self.save_as_cif(self.output_path)
+
+    def save_as_cif(self, pdb_path):
+        """Converts a PDB file to CIF format using BioPython."""
+        if not os.path.exists(pdb_path):
+            if self.verbose:
+                print(f"Error: File {pdb_path} not found for CIF export.")
+            return
+        
+        cif_path = pdb_path.replace(".pdb", ".cif")
+        parser = PDBParser(QUIET=True)
+        structure = parser.get_structure("result", pdb_path)
+        io = MMCIFIO()
+        io.set_structure(structure)
+        io.save(cif_path)
+        if self.verbose:
+            print(f"Structure also saved in CIF format: {cif_path}")

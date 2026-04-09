@@ -1,6 +1,7 @@
 #!/bin/bash
 
 INPUT_ARG=$1
+CIF_ARG=$2
 
 # 3. Optional Parameters
 echo ""
@@ -47,7 +48,7 @@ fi
 SCORES=("rasp" "dfire" "rsRNASP")
 
 for SCORE in "${SCORES[@]}"; do
-    CMD_ARGS="$INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --min-delta $MIN_DELTA --patience-globale $PATIENCE_GLOBALE --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --backbone-weight $BACKBONE_WEIGHT --noise-coords $NOISE_COORDINATE --noise-angles $NOISE_ANGLES $VERBOSE $OUTPUT_ARG"
+    CMD_ARGS="$INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --min-delta $MIN_DELTA --patience-globale $PATIENCE_GLOBALE --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --backbone-weight $BACKBONE_WEIGHT --noise-coords $NOISE_COORDINATE --noise-angles $NOISE_ANGLES $VERBOSE $CIF_ARG $OUTPUT_ARG"
     echo ""
     echo ">>> Running command:"
     echo "python main_full_atom.py $CMD_ARGS"

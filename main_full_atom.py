@@ -36,6 +36,7 @@ def main():
     parser.add_argument("--noise-coords", type=float, default=0.5, help="Noise on coordinates (default: 10.0)")
     parser.add_argument("--noise-angles", type=float, default=0.2, help="Noise on angles (default: 15.0)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output during optimization")
+    parser.add_argument("--cif", action="store_true", help="Export the final structure in .cif format")
     args = parser.parse_args()
 
     # 1. Sequence retrieval
@@ -106,7 +107,8 @@ def main():
         min_delta=args.min_delta,
         patience_globale=args.patience_globale,
         taux_refroidissement=args.taux_refroidissement,
-        bruit_min=args.bruit_min
+        bruit_min=args.bruit_min,
+        export_cif=args.cif
     )
 
     # 4. Optimization run

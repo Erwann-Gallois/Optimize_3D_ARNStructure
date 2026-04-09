@@ -3,7 +3,7 @@ import torch
 import numpy as np
 from biopandas.pdb import PandasPdb
 from parse_rasp_potentials import load_rasp_potentials, get_rasp_type
-from Bio.PDB import Structure, Model, Chain, Residue, Atom, PDBIO
+from Bio.PDB import Structure, Model, Chain, Residue, Atom, PDBIO, MMCIFIO, PDBParser
 import subprocess
 
 class BeadSpringRASPOptimizer:
@@ -25,7 +25,8 @@ class BeadSpringRASPOptimizer:
         min_delta=1e-4, 
         patience_globale=5, 
         taux_refroidissement=0.85, 
-        bruit_min=0.01
+        bruit_min=0.01,
+        export_cif=False
     ):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.lr = lr
@@ -35,6 +36,8 @@ class BeadSpringRASPOptimizer:
         self.patience_globale = patience_globale
         self.taux_refroidissement = taux_refroidissement
         self.bruit_min = bruit_min
+        self.export_cif = export_cif
+        self.verbose = verbose
         self.noise_coords = float(noise_coords)
         self.bead_atom = bead_atom
         self.best_score = float('inf')
@@ -47,8 +50,6 @@ class BeadSpringRASPOptimizer:
         self.l0 = float(l0)
         self.k_angle = float(k_angle)
         self.theta0_rad = float(theta0) * np.pi / 180.0
-
-        self.verbose = verbose
 
         self.load_dict_potentials()
         self.load_structure(sequence)
@@ -275,6 +276,9 @@ class BeadSpringRASPOptimizer:
 
                 current_loss = total.item()
 
+                if current_loss < self.best_score:
+                    self.best_score = current_loss
+                    best_coords.copy_(self.coords.detach())
                 # Local stop condition (ΔE)
                 delta_loss = abs(prev_loss - current_loss)
                 if delta_loss < self.min_delta:
@@ -414,3 +418,22 @@ class BeadSpringRASPOptimizer:
             if self.verbose:
                 print("Error during Arena execution:")
                 print(e.stderr)
+
+        if self.export_cif:
+            self.save_as_cif(self.output_path.replace(".pdb", "_full_atom.pdb"))
+
+    def save_as_cif(self, pdb_path):
+        """Converts a PDB file to CIF format using BioPython."""
+        if not os.path.exists(pdb_path):
+            if self.verbose:
+                print(f"Error: File {pdb_path} not found for CIF export.")
+            return
+        
+        cif_path = pdb_path.replace(".pdb", ".cif")
+        parser = PDBParser(QUIET=True)
+        structure = parser.get_structure("result", pdb_path)
+        io = MMCIFIO()
+        io.set_structure(structure)
+        io.save(cif_path)
+        if self.verbose:
+            print(f"Structure also saved in CIF format: {cif_path}")

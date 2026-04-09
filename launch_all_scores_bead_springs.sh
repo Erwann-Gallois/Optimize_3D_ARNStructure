@@ -1,6 +1,7 @@
 #!/bin/bash
 
 INPUT_ARG=$1
+CIF_ARG=$2
 
 # 2. Optional Parameters (Shared across all runs)
 echo ""
@@ -66,7 +67,7 @@ do
         --k $K \
         --l0 $L0 \
         --bead-atom "$BEAD_ATOM" \
-        $VERBOSE
+        $VERBOSE $CIF_ARG
 done
 
 echo ""

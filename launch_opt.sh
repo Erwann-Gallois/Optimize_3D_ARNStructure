@@ -23,6 +23,13 @@ else
     exit 1
 fi
 
+read -p "Export to CIF format? (y/n): " CIF_YN
+if [ "$CIF_YN" == "y" ]; then
+    CIF_ARG="--cif"
+else
+    CIF_ARG=""
+fi
+
 echo ""
 echo "Choose optimization method:"
 echo "1) Bead-springs"
@@ -47,6 +54,8 @@ case $fonction_choice in
     *) echo "Invalid choice. Using all scores by default." ; SCORES=(all) ;;
 esac
 
+
+
 if [ "$SCORES" == "only one" ]; then
     # 2. Scoring function selection
     echo ""
@@ -64,16 +73,16 @@ if [ "$SCORES" == "only one" ]; then
     esac
 
     if [ "$METHOD" == "bead-springs" ]; then
-        ./launch_bead_springs.sh "$SCORE" "$INPUT_ARG"
+        ./launch_bead_springs.sh "$SCORE" "$INPUT_ARG" "$CIF_ARG"
     elif [ "$METHOD" == "full-atoms" ]; then
-        ./launch_full_atom.sh "$SCORE" "$INPUT_ARG"
+        ./launch_full_atom.sh "$SCORE" "$INPUT_ARG" "$CIF_ARG"
     fi
 
 elif [ "$SCORES" == "all" ]; then
     if [ "$METHOD" == "bead-springs" ]; then
-        ./launch_all_scores_bead_springs.sh "$INPUT_ARG"
+        ./launch_all_scores_bead_springs.sh "$INPUT_ARG" "$CIF_ARG"
     elif [ "$METHOD" == "full-atoms" ]; then
-        ./launch_all_scores_full_atom.sh "$INPUT_ARG"
+        ./launch_all_scores_full_atom.sh "$INPUT_ARG" "$CIF_ARG"
     fi
 fi
 

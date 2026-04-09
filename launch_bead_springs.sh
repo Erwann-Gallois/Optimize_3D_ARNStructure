@@ -2,6 +2,7 @@
 
 SCORE=$1
 INPUT_ARG=$2
+CIF_ARG=$3
 
 # 3. Optional Parameters
 echo ""
@@ -51,11 +52,11 @@ fi
 # 5. Execution
 echo ""
 echo ">>> Running command:"
-echo "python main_bead_springs.py $INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --patience-globale $PATIENCE_GLOBALE --min-delta $MIN_DELTA --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --noise-coords $NOISE_COORDS --k $K --l0 $L0 --bead-atom $BEAD_ATOM $VERBOSE $OUTPUT_ARG"
+echo "python main_bead_springs.py $INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --patience-globale $PATIENCE_GLOBALE --min-delta $MIN_DELTA --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --noise-coords $NOISE_COORDS --k $K --l0 $L0 --bead-atom $BEAD_ATOM $VERBOSE $CIF_ARG $OUTPUT_ARG"
 echo ""
 
 if command -v conda &> /dev/null && [ -n "$CONDA_DEFAULT_ENV" ]; then
-    python main_bead_springs.py $INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --patience-globale $PATIENCE_GLOBALE --min-delta $MIN_DELTA --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --noise-coords $NOISE_COORDS --k $K --l0 $L0 --bead-atom $BEAD_ATOM $VERBOSE $OUTPUT_ARG
+    python main_bead_springs.py $INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --patience-globale $PATIENCE_GLOBALE --min-delta $MIN_DELTA --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --noise-coords $NOISE_COORDS --k $K --l0 $L0 --bead-atom $BEAD_ATOM $VERBOSE $CIF_ARG $OUTPUT_ARG
 else
-    python3 main_bead_springs.py $INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --patience-globale $PATIENCE_GLOBALE --min-delta $MIN_DELTA --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --noise-coords $NOISE_COORDS --k $K --l0 $L0 --bead-atom $BEAD_ATOM $VERBOSE $OUTPUT_ARG
+    python3 main_bead_springs.py $INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --patience-globale $PATIENCE_GLOBALE --min-delta $MIN_DELTA --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --noise-coords $NOISE_COORDS --k $K --l0 $L0 --bead-atom $BEAD_ATOM $VERBOSE $CIF_ARG $OUTPUT_ARG
 fi
