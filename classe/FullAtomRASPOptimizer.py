@@ -24,7 +24,7 @@ class FullAtomRASPOptimizer:
         bruit_min=0.01
     ):
         if not os.path.exists(pdb_path):
-            raise FileNotFoundError(f"Le fichier PDB {pdb_path} n'existe pas.")
+            raise FileNotFoundError(f"The PDB file {pdb_path} does not exist.")
         
         self.pdb_path = pdb_path
         self.lr = lr
@@ -42,7 +42,7 @@ class FullAtomRASPOptimizer:
         self.clash_weight = 100.0
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if self.verbose:
-            print(f"Utilisation du device : {self.device}")
+            print(f"Using device: {self.device}")
         self.best_score = float('inf')
         self.backbone_weight = backbone_weight
         # 1. Chargement des potentiels
@@ -61,7 +61,7 @@ class FullAtomRASPOptimizer:
             taille_mat, dict_pots = load_rasp_potentials(path)
             self.convert_dict_to_tensor(dict_pots, taille_mat)
         else:
-            print(f"Fichier de potentiel non trouvé : {path}")
+            print(f"Potential file not found: {path}")
 
     def convert_dict_to_tensor(self, dict_pots, taille_mat):
         # Pour RASP "all", on a 23 types (0-22). 
@@ -112,14 +112,14 @@ class FullAtomRASPOptimizer:
                 first_idx = (self.df_filtered['residue_number'] == res).idxmax()
                 ref_coords_init[i] = raw_coords[first_idx]
 
-        # PARAMÈTRES OPTIMISABLES : 
-        # 1. Position du centre (translation)
+        # OPTIMIZABLE PARAMETERS: 
+        # 1. Centre position (translation)
         self.ref_coords = torch.nn.Parameter(ref_coords_init.contiguous())
         
-        # 2. Angles de rotation (Euler : rx, ry, rz) initiaux à 0
+        # 2. Rotation angles (Euler: rx, ry, rz) starting at 0
         self.rot_angles = torch.nn.Parameter(torch.zeros((num_nucs, 3), dtype=torch.float32))
         
-        # CONSTANTE : offsets internes des atomes par rapport à leur référence
+        # CONSTANT: internal offsets of atoms relative to their reference
         self.offsets = raw_coords - ref_coords_init[self.atom_to_nuc_idx]
         
         # Identification Backbone
@@ -289,25 +289,25 @@ class FullAtomRASPOptimizer:
         self.best_score = float('inf')
 
         if self.verbose:
-            print(f"🚀 Début de l'optimisation RASP dynamique...")
-            print(f"Nombre de paires d'atomes à traiter : {self.pair_i.size(0):,}")
+            print(f"Starting dynamic RASP optimization...")
+            print(f"Number of atom pairs to process: {self.pair_i.size(0):,}")
         
         current_noise_c = self.noise_coords
         current_noise_a = self.noise_angles
         cycles_sans_amelioration = 0
         cycle_count = 0
 
-        # BOUCLE EXTERNE : Secousses (Exploration)
+        # EXTERNAL LOOP: Shakes (Exploration)
         while current_noise_c > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
             cycle_count += 1
             if self.verbose:
-                print(f"\n--- Phase d'exploration {cycle_count} (Bruit: {current_noise_c:.4f}Å / {current_noise_a:.4f}rad) ---")
+                print(f"\n--- Exploration phase {cycle_count} (Noise: {current_noise_c:.4f}Å / {current_noise_a:.4f}rad) ---")
             
             patience_counter = 0
             prev_loss = float('inf')
             epoch = 0
             
-            # BOUCLE INTERNE : Minimisation locale
+            # INTERNAL LOOP: Local minimization
             while True:
                 optimizer.zero_grad()
                 
@@ -331,43 +331,43 @@ class FullAtomRASPOptimizer:
                 epoch += 1
 
                 # Affichage tous les 100 pas
-                if (epoch % 100 == 0) and self.verbose:
+                if (epoch % 1000 == 0) and self.verbose:
                     print(f"  Iteration {epoch:4d} | Total: {current_loss:.4f} | RASP: {self.rasp_score.item():.2f} | Backbone: {self.bb_penalty.item():.2f} | Clash: {self.clash_penalty.item():.2f}")
 
                 if patience_counter >= self.patience_locale:
                     if self.verbose:
-                        print(f"Minimum local atteint en {epoch} itérations.")
+                        print(f"Local minimum reached in {epoch} iterations.")
                     break
                 
                 if epoch > 10000:
                     if self.verbose:
-                        print(f"Phase locale trop longue, arrêt de sécurité à 10000.")
+                        print(f"Local phase too long, safety cutoff at 10000.")
                     break
 
                 del coords, loss
 
-            # --- BILAN DU CYCLE ---
+            # --- CYCLE SUMMARY ---
             if current_loss < (self.best_score - self.min_delta):
                 if self.verbose:
-                    print(f"Nouveau record absolu ! {self.best_score:.4f} -> {current_loss:.4f}")
+                    print(f"New absolute record! {self.best_score:.4f} -> {current_loss:.4f}")
                 self.best_score = current_loss
                 best_ref_coords.copy_(self.ref_coords)
                 best_rot_angles.copy_(self.rot_angles)
-                # Sauvegarde des scores actuels pour les résumés finaux
-                # Note: rasp_score, bb_penalty, clash_penalty sont déjà mis à jour dans la boucle
+                # Save current scores for final summaries
+                # Note: rasp_score, bb_penalty, clash_penalty are already updated in the loop
                 cycles_sans_amelioration = 0
             else:
                 cycles_sans_amelioration += 1
                 if self.verbose:
-                    print(f"Pas de record. (Échecs : {cycles_sans_amelioration}/{self.patience_globale})")
+                    print(f"No record. (Failures: {cycles_sans_amelioration}/{self.patience_globale})")
 
-            # --- PRÉPARATION DU CYCLE SUIVANT ---
+            # --- PREPARING NEXT CYCLE ---
             current_noise_c *= self.taux_refroidissement
             current_noise_a *= self.taux_refroidissement
             
             if current_noise_c > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
                 if self.verbose:
-                    print(f"Application du SHAKE. Retour à la meilleure conformation et ajout de bruit.")
+                    print(f"Applying SHAKE. Returning to the best conformation and adding noise.")
                 with torch.no_grad():
                     self.ref_coords.copy_(best_ref_coords)
                     self.rot_angles.copy_(best_rot_angles)
@@ -377,12 +377,11 @@ class FullAtomRASPOptimizer:
                 optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
                 torch.cuda.empty_cache()
 
-        if self.verbose:
-            print("\n Optimisation terminée, restauration de la meilleure conformation trouvée...")
+            print("\n Optimization finished, restoring the best conformation found...")
         with torch.no_grad():
             self.ref_coords.copy_(best_ref_coords)
             self.rot_angles.copy_(best_rot_angles)
-            # Re-calcul des scores pour le reporting final
+            # Re-calculate scores for final reporting
             coords = self.get_current_full_coords()
             self.rasp_score, self.bb_penalty, self.clash_penalty = self.calculate_detailed_scores(coords)
             
@@ -396,5 +395,5 @@ class FullAtomRASPOptimizer:
         out_ppdb.df["ATOM"]["chain_id"] = "A"
         out_ppdb.to_pdb(path=self.output_path)
         if self.verbose:
-            print(f"Optimisation Rigide terminée. Meilleur score: {self.best_score:.4f}, RASP : {self.rasp_score:.4f}, Backbone : {self.bb_penalty:.4f}")
-            print(f"Fichier sauvegardé : {self.output_path}")
+            print(f"Rigid Optimization finished. Best score: {self.best_score:.4f}, RASP: {self.rasp_score:.4f}, Backbone: {self.bb_penalty:.4f}, Clash: {self.clash_penalty:.4f}")
+            print(f"File saved: {self.output_path}")

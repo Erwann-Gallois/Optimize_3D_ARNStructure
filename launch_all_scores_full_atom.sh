@@ -1,7 +1,6 @@
 #!/bin/bash
 
-SCORE=$1
-INPUT_ARG=$2
+INPUT_ARG=$1
 
 # 3. Optional Parameters
 echo ""
@@ -45,16 +44,18 @@ else
     OUTPUT_ARG=""
 fi
 
-# 5. Execution
-CMD_ARGS="$INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --min-delta $MIN_DELTA --patience-globale $PATIENCE_GLOBALE --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --backbone-weight $BACKBONE_WEIGHT --noise-coords $NOISE_COORDINATE --noise-angles $NOISE_ANGLES $VERBOSE $OUTPUT_ARG"
+SCORES=("rasp" "dfire" "rsRNASP")
 
-echo ""
-echo ">>> Running command:"
-echo "python main_full_atom.py $CMD_ARGS"
-echo ""
+for SCORE in "${SCORES[@]}"; do
+    CMD_ARGS="$INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --min-delta $MIN_DELTA --patience-globale $PATIENCE_GLOBALE --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --backbone-weight $BACKBONE_WEIGHT --noise-coords $NOISE_COORDINATE --noise-angles $NOISE_ANGLES $VERBOSE $OUTPUT_ARG"
+    echo ""
+    echo ">>> Running command:"
+    echo "python main_full_atom.py $CMD_ARGS"
+    echo ""
 
-if command -v conda &> /dev/null && [ -n "$CONDA_DEFAULT_ENV" ]; then
-    python main_full_atom.py $CMD_ARGS
-else
-    python3 main_full_atom.py $CMD_ARGS
-fi
+    if command -v conda &> /dev/null && [ -n "$CONDA_DEFAULT_ENV" ]; then
+        python main_full_atom.py $CMD_ARGS
+    else
+        python3 main_full_atom.py $CMD_ARGS
+    fi
+done

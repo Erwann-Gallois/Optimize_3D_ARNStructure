@@ -35,23 +35,47 @@ case $method_choice in
     *) echo "Invalid choice. Using bead-springs by default." ; METHOD="bead-springs" ;;
 esac
 
-# 2. Scoring function selection
 echo ""
 echo "Choose scoring function:"
-echo "1) RASP"
-echo "2) DFIRE"
-echo "3) rsRNASP"
-read -p "Your choice (1/2/3): " score_choice
+echo "1) All scores"
+echo "2) Only one score (you will be asked which one)"
+read -p "Your choice (1/2): " fonction_choice
 
-case $score_choice in
-    1) SCORE="rasp" ;;
-    2) SCORE="dfire" ;;
-    3) SCORE="rsRNASP" ;;
-    *) echo "Invalid choice. Using rasp by default." ; SCORE="rasp" ;;
+case $fonction_choice in 
+    1) SCORES=(all) ;;
+    2) SCORES=("only one") ;;
+    *) echo "Invalid choice. Using all scores by default." ; SCORES=(all) ;;
 esac
 
-if [ "$METHOD" == "bead-springs" ]; then
-    ./launch_bead_springs.sh "$SCORE" "$INPUT_ARG"
-elif [ "$METHOD" == "full-atoms" ]; then
-    ./launch_full_atom.sh "$SCORE" "$INPUT_ARG"
+if [ "$SCORES" == "only one" ]; then
+    # 2. Scoring function selection
+    echo ""
+    echo "Choose scoring function:"
+    echo "1) RASP"
+    echo "2) DFIRE"
+    echo "3) rsRNASP"
+    read -p "Your choice (1/2/3): " score_choice
+
+    case $score_choice in
+        1) SCORE="rasp" ;;
+        2) SCORE="dfire" ;;
+        3) SCORE="rsRNASP" ;;
+        *) echo "Invalid choice. Using rasp by default." ; SCORE="rasp" ;;
+    esac
+
+    if [ "$METHOD" == "bead-springs" ]; then
+        ./launch_bead_springs.sh "$SCORE" "$INPUT_ARG"
+    elif [ "$METHOD" == "full-atoms" ]; then
+        ./launch_full_atom.sh "$SCORE" "$INPUT_ARG"
+    fi
+
+elif [ "$SCORES" == "all" ]; then
+    if [ "$METHOD" == "bead-springs" ]; then
+        ./launch_all_scores_bead_springs.sh "$INPUT_ARG"
+    elif [ "$METHOD" == "full-atoms" ]; then
+        ./launch_all_scores_full_atom.sh "$INPUT_ARG"
+    fi
 fi
+
+
+

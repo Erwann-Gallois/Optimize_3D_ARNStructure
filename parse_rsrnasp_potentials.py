@@ -2,7 +2,7 @@ import os
 import numpy as np
 from biopandas.pdb import PandasPdb
 
-# La liste ordonnée exacte des 85 types d'atomes issue de "85atom_type.dat"
+# Exact ordered list of 85 atom types from "85atom_type.dat"
 ATOM_TYPES_85 = [
     "AP", "AOP1", "AOP2", "AO5'", "AC5'", "AC4'", "AO4'", "AC3'", "AO3'", "AC2'", "AO2'", "AC1'", "AN9", "AC8", "AN7", "AC5", "AC6", "AN6", "AN1", "AC2", "AN3", "AC4",
     "UP", "UOP1", "UOP2", "UO5'", "UC5'", "UC4'", "UO4'", "UC3'", "UO3'", "UC2'", "UO2'", "UC1'", "UN1", "UC2", "UO2", "UN3", "UC4", "UO4", "UC5", "UC6",
@@ -10,91 +10,91 @@ ATOM_TYPES_85 = [
     "GP", "GOP1", "GOP2", "GO5'", "GC5'", "GC4'", "GO4'", "GC3'", "GO3'", "GC2'", "GO2'", "GC1'", "GN9", "GC8", "GN7", "GC5", "GC6", "GO6", "GN1", "GC2", "GN2", "GN3", "GC4"
 ]
 
-# Dictionnaire de recherche rapide (Type_String -> Index 0-84)
+# Quick lookup dictionary (Type_String -> Index 0-84)
 TYPE_TO_IDX = {t: i for i, t in enumerate(ATOM_TYPES_85)}
 
 def get_rsrnasp_type(res_name, atom_name):
     """
-    Combine le nom du résidu et de l'atome pour trouver l'index rsRNASP (0 à 84).
-    Retourne -1 si l'atome n'est pas supporté ou est un hydrogène.
+    Combines residue name and atom name to find rsRNASP index (0 to 84).
+    Returns -1 if the atom is not supported or is a hydrogen.
     """
-    # Nettoyage du résidu
+    # Residue cleaning
     res_name = res_name.strip().upper()
     if res_name.startswith('R'): 
         res_name = res_name[1:] 
     if len(res_name) > 1 and res_name in ['ADE', 'URA', 'CYT', 'GUA']:
         res_name = res_name[0]
         
-    # Nettoyage de l'atome (convertit PDB O5* en O5' par ex)
+    # Atom cleaning (converts PDB O5* to O5' for example)
     atom_name = atom_name.strip().replace('*', "'")
     
-    # On ignore les atomes d'hydrogène
+    # Ignore hydrogen atoms
     if atom_name.startswith('H'): 
         return -1
         
-    # Combinaison (ex: "A" + "O5'" -> "AO5'")
+    # Combination (e.g., "A" + "O5'" -> "AO5'")
     combo_name = res_name + atom_name
     
     return TYPE_TO_IDX.get(combo_name, -1)
 
 def load_rsrnasp_potentials(short_path, long_path):
     """
-    Charge les deux fichiers de potentiels rsRNASP.
-    Retourne : (num_types, num_dist_bins, dict_potentials)
+    Loads both rsRNASP potential files.
+    Returns: (num_types, num_dist_bins, dict_potentials)
     
-    Structure de dict_potentials :
-    Clé = (k_state, t1, t2, dist_bin)
-    Valeur = Energy (float)
+    dict_potentials structure:
+    Key = (k_state, t1, t2, dist_bin)
+    Value = Energy (float)
     
     - k_state = 0 pour short-ranged (|i-j| <= 4)
     - k_state = 1 pour long-ranged (|i-j| >= 5)
     """
     if not os.path.exists(short_path) or not os.path.exists(long_path):
-        raise FileNotFoundError(f"Fichiers introuvables : vérifiez les chemins {short_path} et {long_path}")
+        raise FileNotFoundError(f"Files not found: check paths {short_path} and {long_path}")
 
     potentials = {}
     max_dist_bin = 0
     
-    # Fonction interne pour parser un fichier spécifique
+    # Internal function to parse a specific file
     def parse_file(filepath, k_state):
         nonlocal max_dist_bin
         with open(filepath, 'r') as f:
             for line in f:
                 parts = line.strip().split()
-                # On vérifie que la ligne a bien 4 colonnes (t1, t2, bin, energy)
+                # Check if the line has 4 columns (t1, t2, bin, energy)
                 if len(parts) >= 4:
                     t1 = int(parts[0])
                     t2 = int(parts[1])
                     dist_bin = int(parts[2])
                     energy = float(parts[3])
                     
-                    # Symétrie : l'interaction t1-t2 est égale à t2-t1
+                    # Symmetry: interaction t1-t2 is equal to t2-t1
                     potentials[(k_state, t1, t2, dist_bin)] = energy
                     potentials[(k_state, t2, t1, dist_bin)] = energy
                     
                     if dist_bin > max_dist_bin:
                         max_dist_bin = dist_bin
 
-    # 1. Chargement du potentiel Short-Range (index K = 0)
+    # 1. Loading Short-Range potential (index K = 0)
     parse_file(short_path, k_state=0)
     
-    # 2. Chargement du potentiel Long-Range (index K = 1)
+    # 2. Loading Long-Range potential (index K = 1)
     parse_file(long_path, k_state=1)
     
-    num_types = len(ATOM_TYPES_85) # Normalement 85
+    num_types = len(ATOM_TYPES_85) # Normally 85
     num_dist_bins = max_dist_bin + 1
     
     return num_types, num_dist_bins, potentials
 
 def calculate_rsrnasp_score(pdb_path, potentials_dict, step_distance=0.3, cutoff_short=13.0, cutoff_long=24.0):
     """
-    Fonction utilitaire pour évaluer un PDB complet de manière statique.
-    (Pratique pour vérifier l'énergie d'une structure native sans lancer l'optimiseur).
+    Utility function to evaluate a complete PDB statically.
+    (Useful to check native structure energy without running the optimizer).
     """
     ppdb = PandasPdb().read_pdb(pdb_path)
     df = ppdb.df['ATOM']
     
-    # On retire les hydrogènes
+    # Remove hydrogens
     df = df[~df['atom_name'].str.startswith('H')].reset_index(drop=True)
     
     total_energy = 0.0
@@ -121,11 +121,11 @@ def calculate_rsrnasp_score(pdb_path, potentials_dict, step_distance=0.3, cutoff
                 
             seq_sep = abs(res_ids[i] - res_ids[j])
             
-            # rsRNASP ignore les atomes du même résidu
+            # rsRNASP ignores atoms of the same residue
             if seq_sep == 0: 
                 continue 
             
-            # Détermination de l'état K (Short vs Long range)
+            # Determining state K (Short vs Long range)
             if seq_sep <= 4:
                 k_state = 0
                 cutoff = cutoff_short
@@ -133,25 +133,25 @@ def calculate_rsrnasp_score(pdb_path, potentials_dict, step_distance=0.3, cutoff
                 k_state = 1
                 cutoff = cutoff_long
             
-            # Calcul de la distance
+            # Distance calculation
             dist_sq = np.sum((coords[i] - coords[j])**2)
             dist_angstrom = np.sqrt(dist_sq)
             
-            # Application du cutoff (on ne score pas si on est au-delà)
+            # Cutoff application (no score if beyond)
             if dist_angstrom > cutoff:
                 continue 
             
-            # Conversion de la distance physique en "Bin" pour lire le dictionnaire
+            # Physical distance to "Bin" conversion for dictionary lookup
             dist_bin = int(np.floor(dist_angstrom / step_distance))
             
-            # Récupération de l'énergie (par défaut 0.0 si la case de la matrice n'existe pas)
+            # Energy retrieval (default 0.0 if matrix slot doesn't exist)
             energy = potentials_dict.get((k_state, atom1, atom2, dist_bin), 0.0)
             
             total_energy += energy
             pairs_scored += 1
             
     if missing_atoms:
-        print("Avertissement : certains atomes lourds n'ont pas été mappés rsRNASP (ils sont ignorés) :")
+        print("Warning: some heavy atoms were not mapped for rsRNASP (they will be ignored):")
         print(missing_atoms)
             
     return total_energy, pairs_scored

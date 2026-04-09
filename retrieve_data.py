@@ -19,12 +19,12 @@ def main():
 
 # --- CONFIGURATION ---
 def chercher_tous_rna_ids(res_limit, page):
-    """Cherche TOUS les IDs en gérant la pagination de l'API RCSB."""
-    print(f"--- Recherche de toutes les structures (Résolution < {res_limit}Å) ---")
+    """Searches for ALL IDs by managing RCSB API pagination."""
+    print(f"--- Searching for all structures (Resolution < {res_limit}Å) ---")
     url = "https://search.rcsb.org/rcsbsearch/v2/query"
     all_ids = []
     start = 0
-    total_count = 1 
+    total_count = 1 # Initial dummy total to enter the loop
 
     while start < total_count:
         query = {
@@ -66,15 +66,15 @@ def chercher_tous_rna_ids(res_limit, page):
             total_count = data.get('total_count', 0)
             ids = [res['identifier'] for res in data.get('result_set', [])]
             all_ids.extend(ids)
-            print(f"[{len(all_ids)}/{total_count}] Identifiants récupérés...")
+            print(f"[{len(all_ids)}/{total_count}] Identifiers retrieved...")
             start += page
         else:
-            print(f"Erreur API : {response.status_code}")
+            print(f"API Error : {response.status_code}")
             break
     return all_ids
 
 def telecharger_si_absent(pdb_ids, folder, file_format, need_sleep=True):
-    """Télécharge les fichiers uniquement s'ils ne sont pas déjà présents."""
+    """Downloads files only if they are not already present."""
     if not os.path.exists(folder):
         os.makedirs(folder)
 
@@ -85,9 +85,10 @@ def telecharger_si_absent(pdb_ids, folder, file_format, need_sleep=True):
     deja_presents = 0
     a_telecharger = []
 
-    # 1. Analyse préalable du dossier
+    # 1. Preliminary folder analysis
     for pdb_id in pdb_ids:
-        # Biopython nomme souvent les fichiers en minuscule : 1abc.cif
+        # Biopython often names files in lowercase: 1abc.cif
+    # Biopython nomme souvent les fichiers en minuscule : 1abc.cif
         filename = f"{pdb_id.lower()}{ext}"
         filepath = os.path.join(folder, filename)
         
@@ -96,24 +97,24 @@ def telecharger_si_absent(pdb_ids, folder, file_format, need_sleep=True):
         else:
             a_telecharger.append(pdb_id)
 
-    print(f"\nStatistiques du dossier :")
-    print(f"  - Déjà présents : {deja_presents}")
-    print(f"  - À télécharger : {len(a_telecharger)}")
+    print(f"\nFolder statistics:")
+    print(f"  - Already present: {deja_presents}")
+    print(f"  - To download: {len(a_telecharger)}")
 
-    # 2. Téléchargement effectif
+    # 2. Actual download
     if not a_telecharger:
-        print("Tout est déjà à jour !")
+        print("Everything is already up to date!")
         return
 
     for i, pdb_id in enumerate(a_telecharger):
-        print(f"[{i+1}/{len(a_telecharger)}] Téléchargement de {pdb_id}...")
-        # flat=True évite la création de sous-répertoires bizarres
+        print(f"[{i+1}/{len(a_telecharger)}] Downloading {pdb_id}...")
+        # flat=True avoids the creation of weird subdirectories
         pdbl.retrieve_pdb_file(pdb_id, pdir=folder, file_format=file_format)
         if need_sleep:
             time.sleep(1)
 
 
 
-# --- EXÉCUTION ---
+# --- EXECUTION ---
 if __name__ == "__main__":
     main()

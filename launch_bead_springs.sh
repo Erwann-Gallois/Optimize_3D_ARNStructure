@@ -15,16 +15,16 @@ read -p "Minimum delta for local optimization (default 1e-4): " MIN_DELTA
 MIN_DELTA=${MIN_DELTA:-1e-4}
 
 read -p "Rate of temperature decrease (default 0.85): " TAUX_REFROIDISSEMENT
-TAUX_REFROIDISSEMENT=${TAUX_REFROIDISSEMENT:-0.85}
+TAUX_REFROIDISSEMENT=${TAUX_REFROIDISSEMENT:-0.9}
 
 read -p "Minimum temperature (default 0.01): " BRUIT_MIN
 BRUIT_MIN=${BRUIT_MIN:-0.01}
 
 read -p "Noise on coordinates (default 3.0): " NOISE_COORDS
-NOISE_COORDS=${NOISE_COORDS:-3.0}
+NOISE_COORDS=${NOISE_COORDS:-5.0}
 
 read -p "Enter spring constant (default 45.28): " K
-K=${K:-45.28}
+K=${K:-10.0}
 
 read -p "Enter equilibrium length (default 5.726): " L0
 L0=${L0:-5.726}

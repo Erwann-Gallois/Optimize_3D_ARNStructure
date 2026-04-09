@@ -5,7 +5,7 @@ import os
 
 def load_dfire_potentials(filepath):
     if not os.path.exists(filepath):
-        raise FileNotFoundError(f"Le fichier {filepath} n'existe pas.")
+        raise FileNotFoundError(f"The file {filepath} does not exist.")
     import warnings
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
@@ -67,7 +67,7 @@ def calculate_dfire_score(pdb_path, potentials):
             pairs_scored += 1
             
     if missing_atoms:
-        print("Avertissement : certains atomes lourds n'ont pas été mappés (ils seront ignorés) :")
+        print("Warning: some heavy atoms were not mapped (they will be ignored):")
         print(missing_atoms)
 
     return total_energy, pairs_scored

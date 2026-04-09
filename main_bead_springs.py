@@ -64,7 +64,7 @@ def main():
             bead_atom=args.bead_atom,
             k=args.k,
             l0=args.l0,
-            score_weight=1.0,
+            score_weight=50.0,
             verbose=args.verbose,
             patience_locale=args.patience_locale,
             patience_globale=args.patience_globale,

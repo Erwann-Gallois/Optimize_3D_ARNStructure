@@ -3,7 +3,7 @@ import numpy as np
 from biopandas.pdb import PandasPdb
 import torch
 
-# Mapping exact d'après la table RASP (Types 1 à 23 -> Index 0 à 22 pour le code)
+# Exact mapping based on the RASP table (Types 1 to 23 -> Index 0 to 22 for the code)
 # Type 1: OP1, OP2, OP3
 # Type 2: P
 # Type 3: O5'
@@ -28,9 +28,9 @@ import torch
 # Type 22: C6(Pyr)
 # Type 23: N1(G), N3(U)
 
-# On décale de -1 car les indices de la matrice RASP vont de 0 à 22 !
+# Shift by -1 because RASP matrix indices go from 0 to 22!
 RASP_ATOM_TYPES = {
-    # == BACKBONE (Tous résidus) ==
+    # == BACKBONE (All residues) ==
     **{(res, at): 0 for res in ['A','C','G','U'] for at in ['OP1', 'OP2', 'OP3']},
     **{(res, 'P'): 1 for res in ['A','C','G','U']},
     **{(res, "O5'"): 2 for res in ['A','C','G','U']},
@@ -90,12 +90,12 @@ RASP_ATOM_TYPES = {
 
 def load_rasp_potentials(filepath):
     """
-    Charge le fichier de potentiel RASP (.nrg) dans un dictionnaire.
-    Structure désirée : dict[(K, Type1, Type2, Dist)] = Energie
+    Loads the RASP potential file (.nrg) into a dictionary.
+    Desired structure: dict[(K, Type1, Type2, Dist)] = Energy
     """
     with open(filepath, 'r') as f:
         lines = f.readlines()
-    # Récupération de la taille de la matrice de potentiel
+    # Retrieving potential matrix size
     taille = lines[0:2][1]
     taille_mat = taille.split("\t")
     last = taille_mat.pop(-1)
@@ -126,8 +126,8 @@ def load_rasp_potentials(filepath):
 
 def get_rasp_type(res_name, atom_name, type_RASP="all"):
     """
-    Retourne le type d'atome RASP (0-22). 
-    Retourne -1 si atome non supporté.
+    Returns the RASP atom type (0-22). 
+    Returns -1 if the atom is not supported.
     """
     res_name = res_name.strip().upper()
     if res_name.startswith('R'): res_name = res_name[1:] 
@@ -141,7 +141,7 @@ def get_rasp_type(res_name, atom_name, type_RASP="all"):
         return types.get(res_name, -1)
 
     
-    # Nettoyage atome PDB (souvent O5* au lieu de O5')
+    # PDB atom cleaning (often O5* instead of O5')
     atom_name = atom_name.replace('*', "'")
 
     if atom_name.startswith('H'): 
@@ -151,7 +151,7 @@ def get_rasp_type(res_name, atom_name, type_RASP="all"):
 
 def calculer_score_rasp(pdb_path, potentials_dict):
     """
-    Calcule le score énergétique global.
+    Calculates the global energy score.
     """
     ppdb = PandasPdb().read_pdb(pdb_path)
     df = ppdb.df['ATOM']
@@ -187,7 +187,7 @@ def calculer_score_rasp(pdb_path, potentials_dict):
             dist_sq = np.sum((coords[i] - coords[j])**2)
             dist_angstrom = np.sqrt(dist_sq)
             
-            # Les bins RASP sont par tranche de 1A (arrondi au sol)
+            # RASP bins are in 1A increments (floor rounding)
             bin_dist = int(np.floor(dist_angstrom))
             
             if bin_dist > 19:
@@ -198,16 +198,17 @@ def calculer_score_rasp(pdb_path, potentials_dict):
             pairs_scored += 1
             
     if missing_atoms:
-        print("Avertissement : certains atomes lourds n'ont pas été mappés (ils seront ignorés) :")
+        print("Warning: some heavy atoms were not mapped (they will be ignored):")
         print(missing_atoms)
             
     return total_energy, pairs_scored
 
 def calculer_score_rasp_smooth(pdb_path, potential_tensor, device="cpu"):
     """
-    Calcule le score RASP d'un PDB avec interpolation cubique pour éviter 
-    les écarts avec l'optimiseur.
+    Calculates the RASP score of a PDB with cubic interpolation to avoid 
+    discrepancies with the optimizer.
     """
+    # 1. Loading and Mapping (Identical to current code)
     # 1. Chargement et Mapping (Identique à ton code actuel)
     ppdb = PandasPdb().read_pdb(pdb_path)
     df = ppdb.df['ATOM']
@@ -216,26 +217,26 @@ def calculer_score_rasp_smooth(pdb_path, potential_tensor, device="cpu"):
     coords = torch.tensor(df[['x_coord', 'y_coord', 'z_coord']].values, dtype=torch.float32).to(device)
     res_ids = torch.tensor(df['residue_number'].values, dtype=torch.long).to(device)
     
-    # Récupération des types RASP (assure-toi que get_rasp_type est importé)
+    # Retrieving RASP types (ensure get_rasp_type is imported)
     atom_types = torch.tensor([get_rasp_type(r, a) for r, a in zip(df['residue_name'], df['atom_name'])], dtype=torch.long).to(device)
     
-    # 2. Préparation des paires (Triangular upper)
+    # 2. Preparing pairs (Triangular upper)
     n_atoms = len(df)
     i_idx, j_idx = torch.triu_indices(n_atoms, n_atoms, offset=1, device=device)
     
-    # Calcul de la séparation séquentielle k 
+    # Sequential separation k calculation
     sep = torch.abs(res_ids[i_idx] - res_ids[j_idx])
-    mask_k = sep > 0 # On ignore k=0 selon l'article
+    mask_k = sep > 0 # Ignore k=0 according to the paper
     
     pair_i = i_idx[mask_k]
     pair_j = j_idx[mask_k]
-    k_vals = torch.clamp(sep[mask_k] - 1, 0, 5) # k de 0 à 5 dans la matrice
+    k_vals = torch.clamp(sep[mask_k] - 1, 0, 5) # k from 0 to 5 in the matrix
     
-    # 3. Calcul des distances et Spline Cubique
+    # 3. Distance calculation and Cubic Spline
     dists = torch.norm(coords[pair_i] - coords[pair_j], dim=1) + 1e-8
     
-    # Seuil de l'article : Les interactions au-delà de 20A sont considérées nulles 
-    # Pour coller à ton script de validation : 19.0A
+    # Paper threshold: Interactions beyond 20A are considered zero
+    # To match your validation script: 19.0A
     mask_cutoff = (dists < 19.0).float()
     
     max_idx = potential_tensor.size(3) - 1
@@ -247,14 +248,14 @@ def calculer_score_rasp_smooth(pdb_path, potential_tensor, device="cpu"):
     im1 = torch.clamp(d0 - 1, min=0)
     i2  = torch.clamp(d1 + 1, max=max_idx)
     
-    # Extraction des énergies
+    # Energy extraction
     t1, t2 = atom_types[pair_i], atom_types[pair_j]
     p0 = potential_tensor[k_vals, t1, t2, im1]
     p1 = potential_tensor[k_vals, t1, t2, d0]
     p2 = potential_tensor[k_vals, t1, t2, d1]
     p3 = potential_tensor[k_vals, t1, t2, i2]
     
-    # Formule Catmull-Rom (Spline)
+    # Catmull-Rom formula (Spline)
     interp_energy = 0.5 * (
         (2 * p1) +
         (-p0 + p2) * alpha +
@@ -262,6 +263,6 @@ def calculer_score_rasp_smooth(pdb_path, potential_tensor, device="cpu"):
         (-p0 + 3 * p1 - 3 * p2 + p3) * alpha**3
     )
     
-    # Score final : Somme pondérée par le masque de distance
+    # Final score: Weighted sum by distance mask
     total_score = torch.sum(interp_energy * mask_cutoff)
     return total_score.item()

@@ -23,7 +23,7 @@ class FullAtomDFIREOptimizer:
         bruit_min=0.01
     ):
         if not os.path.exists(pdb_path):
-            raise FileNotFoundError(f"Le fichier PDB {pdb_path} n'existe pas.")
+            raise FileNotFoundError(f"The PDB file {pdb_path} does not exist.")
         
         self.pdb_path = pdb_path
         self.lr = lr
@@ -37,7 +37,7 @@ class FullAtomDFIREOptimizer:
         self.taux_refroidissement = taux_refroidissement
         self.bruit_min = bruit_min
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Utilisation du device : {self.device}")
+        print(f"Using device: {self.device}")
         self.best_score = float('inf')
         self.backbone_weight = backbone_weight
         self.clash_weight = 100.0  # Force de la pénalité
@@ -60,7 +60,7 @@ class FullAtomDFIREOptimizer:
             dict_pots = load_dfire_potentials(path)
             self.convert_dict_to_tensor(dict_pots)
         else:
-            print(f"Fichier de potentiel non trouvé : {path}")
+            print(f"Potential file not found: {path}")
 
     def convert_dict_to_tensor(self, dict_pots):
         # Récupérer tous les types d'atomes uniques
@@ -116,11 +116,11 @@ class FullAtomDFIREOptimizer:
                 first_idx = (self.df_filtered['residue_number'] == res).idxmax()
                 ref_coords_init[i] = raw_coords[first_idx]
 
-        # PARAMÈTRES OPTIMISABLES : 
+        # OPTIMIZABLE PARAMETERS: 
         self.ref_coords = torch.nn.Parameter(ref_coords_init.contiguous())
         self.rot_angles = torch.nn.Parameter(torch.zeros((num_nucs, 3), dtype=torch.float32).to(self.device))
         
-        # CONSTANTE : offsets internes
+        # CONSTANT: internal offsets
         self.offsets = raw_coords - ref_coords_init[self.atom_to_nuc_idx]
         
         # Identification Backbone (pour la contrainte de distance O3'-P)
@@ -297,25 +297,25 @@ class FullAtomDFIREOptimizer:
         self.best_score = float('inf')
 
         if self.verbose:
-            print(f"🚀 Début de l'optimisation DFIRE dynamique...")
-            print(f"Nombre de paires d'atomes à traiter : {self.pair_i.size(0):,}")
+            print(f"Starting dynamic DFIRE optimization...")
+            print(f"Number of atom pairs to process: {self.pair_i.size(0):,}")
         
         current_noise_c = self.noise_coords
         current_noise_a = self.noise_angles
         cycles_sans_amelioration = 0
         cycle_count = 0
 
-        # BOUCLE EXTERNE : Secousses (Exploration)
+        # EXTERNAL LOOP: Shakes (Exploration)
         while current_noise_c > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
             cycle_count += 1
             if self.verbose:
-                print(f"\n--- Phase d'exploration {cycle_count} (Bruit: {current_noise_c:.4f}Å / {current_noise_a:.4f}rad) ---")
+                print(f"\n--- Exploration phase {cycle_count} (Noise: {current_noise_c:.4f}Å / {current_noise_a:.4f}rad) ---")
             
             patience_counter = 0
             prev_loss = float('inf')
             epoch = 0
             
-            # BOUCLE INTERNE : Minimisation locale
+            # INTERNAL LOOP: Local minimization
             while True:
                 optimizer.zero_grad()
                 
@@ -338,26 +338,26 @@ class FullAtomDFIREOptimizer:
                 prev_loss = current_loss
                 epoch += 1
 
-                if epoch % 100 == 0:
+                if epoch % 1000 == 0:
                     if self.verbose:
                         print(f"  Iteration {epoch:4d} | Total: {current_loss:.4f} | DFIRE: {score.item():.4f} | BB: {bb_penalty.item():.4f} | Clash: {clash_penalty.item():.4f}")
                 
                 if patience_counter >= self.patience_locale:
                     if self.verbose:
-                        print(f"Minimum local atteint en {epoch} itérations.")
+                        print(f"Local minimum reached in {epoch} iterations.")
                     break
                 
                 if epoch > 10000:
                     if self.verbose:
-                        print(f"Phase locale trop longue, arrêt de sécurité à 10000.")
+                        print(f"Local phase too long, safety cutoff at 10000.")
                     break
 
                 del coords, score, bb_penalty, clash_penalty, loss
 
-            # --- BILAN DU CYCLE ---
+            # --- CYCLE SUMMARY ---
             if current_loss < (self.best_score - self.min_delta):
                 if self.verbose:
-                    print(f"Nouveau record absolu ! {self.best_score:.4f} -> {current_loss:.4f}")
+                    print(f"New absolute record! {self.best_score:.4f} -> {current_loss:.4f}")
                 self.best_score = current_loss
                 best_ref_coords.copy_(self.ref_coords)
                 best_rot_angles.copy_(self.rot_angles)
@@ -365,15 +365,15 @@ class FullAtomDFIREOptimizer:
             else:
                 cycles_sans_amelioration += 1
                 if self.verbose:
-                    print(f"Pas de record. (Échecs : {cycles_sans_amelioration}/{self.patience_globale})")
+                    print(f"No record. (Failures: {cycles_sans_amelioration}/{self.patience_globale})")
 
-            # --- PRÉPARATION DU CYCLE SUIVANT ---
+            # --- PREPARING NEXT CYCLE ---
             current_noise_c *= self.taux_refroidissement
             current_noise_a *= self.taux_refroidissement
             
             if current_noise_c > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
                 if self.verbose:
-                    print(f"Application du SHAKE. Retour à la meilleure conformation et ajout de bruit.")
+                    print(f"Applying SHAKE. Returning to the best conformation and adding noise.")
                 with torch.no_grad():
                     self.ref_coords.copy_(best_ref_coords)
                     self.rot_angles.copy_(best_rot_angles)
@@ -383,7 +383,7 @@ class FullAtomDFIREOptimizer:
                 optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
                 torch.cuda.empty_cache()
 
-        print("\n Optimisation terminée.")
+        print("\n Optimization finished.")
         with torch.no_grad():
             self.ref_coords.copy_(best_ref_coords)
             self.rot_angles.copy_(best_rot_angles)
@@ -397,4 +397,4 @@ class FullAtomDFIREOptimizer:
         out_ppdb.df['ATOM'][['x_coord', 'y_coord', 'z_coord']] = final_full_coords
         out_ppdb.df["ATOM"]["chain_id"] = "A"
         out_ppdb.to_pdb(path=self.output_path)
-        print(f"Fichier sauvegardé : {self.output_path}")
+        print(f"File saved: {self.output_path}")

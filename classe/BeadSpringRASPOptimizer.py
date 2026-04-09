@@ -10,16 +10,16 @@ class BeadSpringRASPOptimizer:
     def __init__(
         self,
         sequence,
-        lr=0.2,
+        lr=0.05,
         output_path="output_bead.pdb",
         noise_coords=3.0,
         bead_atom="C3'",
-        k=45.86,        # Issu de std=0.305
+        k=45.86,        # From std=0.305
         l0=5.726,
-        k_angle=30.0,   # Raideur d'angle (ajustée pour RASP)
-        theta0=139.07,  # Ta moyenne d'angle calculée
+        k_angle=30.0,   # Bending stiffness (adjusted for RASP)
+        theta0=139.07,  # Calculated mean angle
         type_RASP="all",
-        score_weight=1.0,
+        score_weight=50.0,
         verbose=True,
         patience_locale=100, 
         min_delta=1e-4, 
@@ -38,11 +38,11 @@ class BeadSpringRASPOptimizer:
         self.noise_coords = float(noise_coords)
         self.bead_atom = bead_atom
         self.best_score = float('inf')
-        # Paramètres RASP
+        # RASP parameters
         self.type_RASP = type_RASP
         self.rasp_weight = float(score_weight)
 
-        # Paramètres FENE-Fraenkel
+        # FENE-Fraenkel parameters
         self.k = float(k)
         self.l0 = float(l0)
         self.k_angle = float(k_angle)
@@ -63,7 +63,7 @@ class BeadSpringRASPOptimizer:
                 print(f"RASP potentials '{self.type_RASP}' loaded.")
         else:
             if self.verbose:
-                print(f"Potential file not found : {path}, RASP ignored.")
+                print(f"Potential file not found: {path}, RASP ignored.")
             self.potential_tensor = None
 
     def convert_dict_to_tensor(self, dict_pots, taille_mat):
@@ -79,11 +79,15 @@ class BeadSpringRASPOptimizer:
         bead_rows = []
 
         for i, nt in enumerate(sequence):
-            # Coordonnées droites sur x, espacées de l0
-            coord = [float(i * self.l0), 0.0, 0.0]
-            bead_coords.append(coord)
+            if i == 0:
+                current_pos = torch.zeros(3)
+            else:
+                direction = torch.randn(3)
+                direction /= (torch.norm(direction) + 1e-8)
+                current_pos = torch.tensor(bead_coords[-1]) + direction * self.l0
+            bead_coords.append(current_pos.tolist())
             
-            # On stocke les infos minimales nécessaires pour setup_pairs et save_pdb
+            # Store minimal necessary info for setup_pairs and save_pdb
             row = {
                 'residue_name': nt,
                 'residue_number': i + 1,
@@ -102,12 +106,13 @@ class BeadSpringRASPOptimizer:
         i, j = torch.triu_indices(self.num_beads, self.num_beads, offset=1)
         sep = j - i
         
-        # paires RASP
+        # Pairs for excluded volume (WCA) and RASP
+        mask_rasp = sep > 1
+        self.rasp_i = i[mask_rasp].to(self.device)
+        self.rasp_j = j[mask_rasp].to(self.device)
+        self.rasp_sep = sep[mask_rasp].to(self.device)
+
         if getattr(self, 'potential_tensor', None) is not None:
-            mask_rasp = sep > 0
-            self.rasp_i = i[mask_rasp].to(self.device)
-            self.rasp_j = j[mask_rasp].to(self.device)
-            self.rasp_sep = sep[mask_rasp].to(self.device)
             self.k_vals = torch.clamp(self.rasp_sep - 1, 0, 5)
 
             t_vals = []
@@ -115,7 +120,7 @@ class BeadSpringRASPOptimizer:
                 res_name = str(row['residue_name']).strip() if 'residue_name' in row else 'RNA'
                 atom_name = str(row['atom_name']).strip() if 'atom_name' in row else self.bead_atom
                 t = get_rasp_type(res_name, atom_name, self.type_RASP)
-                if t == -1: t = 0
+                if t == -1: t = 0 # Default type
                 t_vals.append(t)
             
             t_vals_tensor = torch.tensor(t_vals, dtype=torch.long, device=self.device)
@@ -124,9 +129,9 @@ class BeadSpringRASPOptimizer:
 
     def fene_fraenkel_bond_energy(self):
         """
-        Potentiel FENE-Fraenkel sur les liaisons consécutives.
+        FENE-Fraenkel potential on consecutive bonds.
 
-        On pose : delta = r - l0
+        We set: delta = r - l0
         E = 1/2 * k * (delta)^2
         """
         p1 = self.coords[:-1]
@@ -148,7 +153,7 @@ class BeadSpringRASPOptimizer:
         dists = torch.norm(p_i - p_j, dim=1) + 1e-8
         
         max_idx = self.potential_tensor.size(3) - 1
-        d_clamp = torch.clamp(dists, 0.5, float(max_idx - 1.5)) 
+        d_clamp = torch.clamp(dists, 0.5, float(max_idx - 1.5)) # Clamp to grid range
         d0 = torch.floor(d_clamp).long()
         d1 = d0 + 1
         alpha = d_clamp - d0.float()
@@ -161,21 +166,56 @@ class BeadSpringRASPOptimizer:
         p2 = self.potential_tensor[self.k_vals, self.t1_vals, self.t2_vals, d1]
         p3 = self.potential_tensor[self.k_vals, self.t1_vals, self.t2_vals, i2]
         
-        # Interpolation Catmull-Rom
+        # Catmull-Rom interpolation
         interp_energy = 0.5 * (
             (2 * p1) + (-p0 + p2) * alpha +
             (2 * p0 - 5 * p1 + 4 * p2 - p3) * alpha**2 +
             (-p0 + 3 * p1 - 3 * p2 + p3) * alpha**3
         )
         
-        # Cutoff sigmoid pour une annulation douce autour de 19A
+        # Sigmoid cutoff for smooth decay around 19A
         cutoff = torch.sigmoid(2.0 * (19.0 - dists))
         rasp_score = torch.sum(interp_energy * cutoff)
         
         return self.rasp_weight * rasp_score
 
+    def excluded_volume_energy(self):
+        if self.rasp_i is None or len(self.rasp_i) == 0:
+            return torch.tensor(0.0, device=self.device)
+
+        p_i = self.coords[self.rasp_i]
+        p_j = self.coords[self.rasp_j]
+    
+        # Squared distance calculation for performance
+        dist_sq = torch.sum((p_i - p_j)**2, dim=1) + 1e-8
+        
+        # WCA parameters
+        sigma = 4.5 
+        epsilon = 1.0 # Barrier strength
+        
+        # r_cut = 2^(1/6) * sigma
+        r_cut_sq = (2**(1/3)) * (sigma**2)
+        
+        # Mask to keep only colliding beads
+        mask = dist_sq < r_cut_sq
+        if not mask.any():
+            return torch.tensor(0.0, device=self.device)
+        
+        # Only calculate for close pairs
+        d2 = dist_sq[mask]
+        s2 = sigma**2
+        
+        # (sigma^2 / r^2)^3 = (sigma^6 / r^6)
+        inv_r6 = (s2 / d2)**3
+        inv_r12 = inv_r6**2
+        
+        # WCA formula: 4 * epsilon * (r12 - r6) + epsilon
+        wca = 4 * epsilon * (inv_r12 - inv_r6) + epsilon
+        
+        return 0.5 * torch.sum(wca)
+
     def valence_angle_energy(self):
-        """Rigidité de flexion pour éviter l'effet 'ressort' écrasé."""
+        """Bending stiffness to avoid crushed 'spring' effect."""
         if self.num_beads < 3: return torch.tensor(0.0, device=self.device)
         v1 = self.coords[:-2] - self.coords[1:-1]
         v2 = self.coords[2:] - self.coords[1:-1]
@@ -190,32 +230,33 @@ class BeadSpringRASPOptimizer:
         bond = self.fene_fraenkel_bond_energy()
         rasp = self.rasp_like_energy()
         angle = self.valence_angle_energy()
-        return bond + rasp + angle, bond, rasp, angle
+        repulsion = self.excluded_volume_energy()
+        return bond + rasp + angle + repulsion, bond, rasp, angle, repulsion
 
     def run_optimization(self):
         """
-        Optimisation dynamique sans limite fixe d'époques ni de cycles.
+        Dynamic optimization without fixed limit of epochs or cycles.
         
-        - patience_locale : Nb itérations sans amélioration avant de finir une phase de repliement.
-        - patience_globale : Nb de "secousses" consécutives sans battre le record absolu avant d'abandonner.
-        - taux_refroidissement : Facteur de réduction du bruit à chaque secousse (ex: 0.85).
-        - bruit_min : Seuil sous lequel la secousse est considérée comme négligeable.
+        - patience_locale : Number of iterations without improvement before finishing a folding phase.
+        - patience_globale : Number of consecutive "shakes" without beating the absolute record before giving up.
+        - taux_refroidissement : Noise reduction factor at each shake (e.g., 0.85).
+        - bruit_min : Threshold below which the shake is considered negligible.
         """
         optimizer = torch.optim.Adam([self.coords], lr=self.lr)
 
         best_coords = self.coords.detach().clone()
         self.best_score = float('inf')
         
-        # Le bruit initial remplace le concept de "nombre de cycles"
+        # Initial noise replaces the "number of cycles" concept
         current_noise = self.noise_coords
         cycles_sans_amelioration = 0
         cycle_count = 0
 
         if self.verbose:
-            print(f"Use of device : {self.device}")
-            print(f"Start of dynamic optimization (Bassin Hopping/Annealing Algorithm)...")
+            print(f"Using device: {self.device}")
+            print(f"Starting dynamic optimization (Basin Hopping/Annealing Algorithm)...")
 
-        # BOUCLE EXTERNE : Contrôlée par le niveau de bruit et les échecs successifs
+        # EXTERNAL LOOP: Controlled by noise level and successive failures
         while current_noise > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
             cycle_count += 1
             if self.verbose:
@@ -225,74 +266,74 @@ class BeadSpringRASPOptimizer:
             prev_loss = float('inf')
             epoch = 0
             
-            # BOUCLE INTERNE : Remplace 'for epoch in range(num_epochs)'
+            # INTERNAL LOOP: Replaces 'for epoch in range(num_epochs)'
             while True:
                 optimizer.zero_grad()
-                total, bond, rasp, angle = self.total_energy()
+                total, bond, rasp, angle, repulsion = self.total_energy()
                 total.backward()
                 optimizer.step()
 
                 current_loss = total.item()
 
-                # Condition d'arrêt local (ΔE)
+                # Local stop condition (ΔE)
                 delta_loss = abs(prev_loss - current_loss)
                 if delta_loss < self.min_delta:
                     patience_counter += 1
                 else:
-                    patience_counter = 0  # On a trouvé une bonne pente, on réinitialise
+                    patience_counter = 0  # Found a good slope, reset
                 
                 prev_loss = current_loss
                 epoch += 1
 
-                # Affichage tous les 100 pas pour surveiller
-                if epoch % 100 == 0:
+                # Display every 100 steps to monitor
+                if epoch % 1000 == 0:
                     if self.verbose:
-                        print(f"  Itération {epoch:4d} | Total: {current_loss:.4f} | FENE: {bond:.4f} | RASP: {rasp:.4f} | Angle: {angle:.4f}")
+                        print(f"  Iteration {epoch:4d} | Total: {current_loss:.4f} | FENE: {bond:.4f} | RASP: {rasp:.4f} | Angle: {angle:.4f} | Repulsion: {repulsion:.4f}")
 
-                # Arrêt de la phase locale si on est coincé dans un minimum
+                # Local phase stop if stuck in a minimum
                 if patience_counter >= self.patience_locale:
                     if self.verbose:
                         print(f"  Local minimum reached in {epoch} iterations.")
                     break
                 
-                # Sécurité : valve de secours pour éviter une boucle infinie pure (ex: oscillation)
+                # Safety: relief valve to avoid a pure infinite loop (e.g., oscillation)
                 if epoch > 10000:
                     if self.verbose:
                         print(f"  Local phase too long, safety cutoff at 10000.")
                     break
 
-            # --- BILAN DU CYCLE ---
-            # Est-ce que ce minimum local est le meilleur jamais trouvé ?
+            # --- CYCLE SUMMARY ---
+            # Is this local minimum the best ever found?
             if current_loss < (self.best_score - self.min_delta):
                 if self.verbose:
-                    print(f"  New absolute record ! {self.best_score:.4f} -> {current_loss:.4f}")
+                    print(f"  New absolute record! {self.best_score:.4f} -> {current_loss:.4f}")
                 self.best_score = current_loss
                 best_coords.copy_(self.coords.detach())
-                cycles_sans_amelioration = 0  # On remet le compteur d'échecs à zéro
+                cycles_sans_amelioration = 0  # Reset failure counter to zero
             else:
                 cycles_sans_amelioration += 1
                 if self.verbose:
                     print(f"  No record. (Unsuccessful attempts : {cycles_sans_amelioration}/{self.patience_globale})")
 
-            # --- PRÉPARATION DU CYCLE SUIVANT ---
-            current_noise *= self.taux_refroidissement  # Le système "refroidit"
+            # --- NEXT CYCLE PREPARATION ---
+            current_noise *= self.taux_refroidissement  # The system "cools"
             
             if current_noise > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
                 if self.verbose:
-                    print(f"  -> Application du SHAKE. Return to the best conformation and add noise.")
+                    print(f"  -> Applying SHAKE. Returning to the best conformation and adding noise.")
                 with torch.no_grad():
                     self.coords.copy_(best_coords)
                     self.coords.add_(torch.randn_like(self.coords) * current_noise)
-                # On réinitialise l'optimiseur pour effacer la "mémoire" (moment) des gradients précédents
+                # Reset the optimizer to clear the "memory" (momentum) of previous gradients
                 optimizer = torch.optim.Adam([self.coords], lr=self.lr)
 
-        # --- FIN DE L'OPTIMISATION ---
+        # --- END OF OPTIMIZATION ---
         if self.verbose:
-            print("\n Global optimization finished !")
+            print("\n Global optimization finished!")
             if current_noise <= self.bruit_min:
-                print("Reason : The system has cooled (the noise has become too weak to break the bonds).")
+                print("Reason: The system has cooled (the noise has become too weak to break the bonds).")
             else:
-                print(f"Reason : Inability to find a better folding after {self.patience_globale} consecutive shakes.")
+                print(f"Reason: Inability to find a better folding after {self.patience_globale} consecutive shakes.")
 
         with torch.no_grad():
             self.coords.copy_(best_coords)
@@ -301,25 +342,25 @@ class BeadSpringRASPOptimizer:
 
 
     def save_pdb(self):
-        # 1. Récupération des coordonnées optimisées
+        # 1. Retrieve optimized coordinates
         coords = self.coords.detach().cpu().numpy()
 
-        # 2. Création de la structure hiérarchique Biopython
+        # 2. Create Biopython hierarchical structure
         structure = Structure.Structure("optimized")
         model = Model.Model(0)
         structure.add(model)
 
-        # Dictionnaire pour stocker les chaînes créées
+        # Dictionary to store created chains
         chains = {}
 
         for i, (row, coord) in enumerate(zip(self.template_rows, coords), start=1):
-            # Extraction propre des métadonnées
+            # Extract metadata
             chain_id = str(row['chain_id']).strip() if 'chain_id' in row and str(row['chain_id']).strip() else 'A'
             res_name = str(row['residue_name']).strip() if 'residue_name' in row else 'RNA'
             res_num = int(row['residue_number']) if 'residue_number' in row else i
             atom_name = str(row['atom_name']).strip() if 'atom_name' in row else self.bead_atom
             
-            # Gestion des chaînes
+            # Chain management
             if chain_id not in chains:
                 new_chain = Chain.Chain(chain_id)
                 model.add(new_chain)
@@ -327,11 +368,11 @@ class BeadSpringRASPOptimizer:
             
             current_chain = chains[chain_id]
 
-            # Création du résidu (id = (' ', numero, ' '))
-            # Note: Biopython utilise un tuple pour l'ID du résidu (hetero-flag, sequence_number, insertion_code)
+            # Residue creation (id = (' ', number, ' '))
+            # Note: Biopython uses a tuple for the residue ID (hetero-flag, sequence_number, insertion_code)
             residue = Residue.Residue((' ', res_num, ' '), res_name, ' ')
             
-            # Création de l'atome
+            # Atom creation
             # Atom.Atom(name, coord, b_factor, occupancy, altloc, fullname, serial_number, element)
             atom = Atom.Atom(
                 atom_name, 
@@ -339,7 +380,7 @@ class BeadSpringRASPOptimizer:
                 0.0,    # B-factor
                 1.0,    # Occupancy
                 ' ',    # Altloc
-                f" {atom_name:<3}", # Fullname (4 caractères avec espaces)
+                f" {atom_name:<3}", # Fullname (4 characters with spaces)
                 i,      # Serial number
                 element='C' # Element
             )
@@ -347,11 +388,11 @@ class BeadSpringRASPOptimizer:
             residue.add(atom)
             current_chain.add(residue)
 
-        # 3. Écriture du fichier avec PDBIO
+        # 3. Write file with PDBIO
         io = PDBIO()
         io.set_structure(structure)
         io.save(self.output_path)
-        # On sépare chaque espace de votre commande en un élément de liste
+        # Split each space of your command into a list element
         commande = [
             "./../Arena/Arena", 
             self.output_path, 
@@ -360,16 +401,16 @@ class BeadSpringRASPOptimizer:
         ]
 
         try:
-            # Lancement de l'exécution
+            # Launch execution
             resultat = subprocess.run(commande, capture_output=True, text=True, check=True)
             
-            # Affichage de ce que Arena a renvoyé
+            # Display Arena output
             if self.verbose:
-                print(f"Well formatted PDB file saved : {self.output_path.replace('.pdb', '_full_atom.pdb')}")
-                print(f"Best score : {self.best_score}")
-            os.remove(self.output_path)
+                print(f"Well-formatted PDB file saved: {self.output_path.replace('.pdb', '_full_atom.pdb')}")
+                print(f"Best score: {self.best_score}")
+            # os.remove(self.output_path)
 
         except subprocess.CalledProcessError as e:
             if self.verbose:
-                print("Error during Arena execution :")
+                print("Error during Arena execution:")
                 print(e.stderr)

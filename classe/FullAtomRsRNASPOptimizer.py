@@ -27,7 +27,7 @@ class FullAtomRsRNASPOptimizer:
         bruit_min=0.01
     ):
         if not os.path.exists(pdb_path):
-            raise FileNotFoundError(f"Le fichier PDB {pdb_path} n'existe pas.")
+            raise FileNotFoundError(f"The PDB file {pdb_path} does not exist.")
         
         self.pdb_path = pdb_path
         self.lr = lr
@@ -54,7 +54,7 @@ class FullAtomRsRNASPOptimizer:
         
         self.verbose = verbose
         if self.verbose:
-            print(f"Utilisation du device : {self.device}")
+            print(f"Using device: {self.device}")
 
         # 1. Chargement des potentiels
         self.load_dict_potentials()
@@ -80,10 +80,10 @@ class FullAtomRsRNASPOptimizer:
                 self.potential_tensor[k_state, t1, t2, dist_bin] = energy
                 
             if self.verbose:
-                print(f"✅ Potentiels rsRNASP chargés (Types: {num_types}, Bins: {num_bins}, Step: {self.step_distance}Å).")
+                print(f"rsRNASP potentials loaded (Types: {num_types}, Bins: {num_bins}, Step: {self.step_distance}Å).")
         else:
             if self.verbose:
-                print(f"⚠️ Fichiers de potentiels rsRNASP introuvables, rsRNASP ignoré.")
+                print(f"rsRNASP potential files not found, rsRNASP ignored.")
             self.potential_tensor = None
 
     def convert_pdb_to_rigid_tensors(self, pdb_path):
@@ -113,11 +113,11 @@ class FullAtomRsRNASPOptimizer:
                 first_idx = (self.df_filtered['residue_number'] == res).idxmax()
                 ref_coords_init[i] = raw_coords[first_idx]
 
-        # PARAMÈTRES OPTIMISABLES (Corps rigide)
+        # OPTIMIZABLE PARAMETERS (Rigid body)
         self.ref_coords = torch.nn.Parameter(ref_coords_init.contiguous())
         self.rot_angles = torch.nn.Parameter(torch.zeros((num_nucs, 3), dtype=torch.float32).to(self.device))
         
-        # CONSTANTE : offsets internes
+        # CONSTANT: internal offsets
         self.offsets = raw_coords - ref_coords_init[self.atom_to_nuc_idx]
         
         # Identification Backbone
@@ -296,25 +296,25 @@ class FullAtomRsRNASPOptimizer:
         self.best_score = float('inf')
 
         if self.verbose:
-            print(f"🚀 Début de l'optimisation rsRNASP dynamique...")
-            print(f"Nombre de paires d'atomes à traiter : {self.pair_i.size(0):,}")
+            print(f"Starting dynamic rsRNASP optimization...")
+            print(f"Number of atom pairs to process: {self.pair_i.size(0):,}")
         
         current_noise_c = self.noise_coords
         current_noise_a = self.noise_angles
         cycles_sans_amelioration = 0
         cycle_count = 0
 
-        # BOUCLE EXTERNE : Secousses (Exploration)
+        # EXTERNAL LOOP: Shakes (Exploration)
         while current_noise_c > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
             cycle_count += 1
             if self.verbose:
-                print(f"\n--- Phase d'exploration {cycle_count} (Bruit: {current_noise_c:.4f}Å / {current_noise_a:.4f}rad) ---")
+                print(f"\n--- Exploration phase {cycle_count} (Noise: {current_noise_c:.4f}Å / {current_noise_a:.4f}rad) ---")
             
             patience_counter = 0
             prev_loss = float('inf')
             epoch = 0
             
-            # BOUCLE INTERNE : Minimisation locale
+            # INTERNAL LOOP: Local minimization
             while True:
                 optimizer.zero_grad()
                 
@@ -340,33 +340,33 @@ class FullAtomRsRNASPOptimizer:
                 prev_loss = current_loss
                 epoch += 1
 
-                if (epoch % 100 == 0) and self.verbose:
+                if (epoch % 1000 == 0) and self.verbose:
                     print(f"  Iteration {epoch:4d} | Total: {current_loss:.4f} | rsRNASP: {score.item():.4f} | BB: {bb_penalty.item():.2f} | Clash: {clash_penalty.item():.2f}")
                 
                 if patience_counter >= self.patience_locale:
                     if self.verbose:
-                        print(f"Minimum local atteint en {epoch} itérations.")
+                        print(f"Local minimum reached in {epoch} iterations.")
                     break
                 
                 if epoch > 10000:
                     if self.verbose:
-                        print(f"Phase locale trop longue, arrêt de sécurité à 10000.")
+                        print(f"Local phase too long, safety cutoff at 10000.")
                     break
 
                 del coords, score, bb_penalty, clash_penalty, loss
 
-            # --- BILAN DU CYCLE ---
+            # --- CYCLE SUMMARY ---
             if current_loss < (self.best_score - self.min_delta):
                 if self.verbose:
-                    print(f"Nouveau record absolu ! {self.best_score:.4f} -> {current_loss:.4f}")
+                    print(f"New absolute record! {self.best_score:.4f} -> {current_loss:.4f}")
                 self.best_score = current_loss
                 best_ref_coords.copy_(self.ref_coords)
-                best_rot_angles.copy_(self.rot_angles)
+                best_rot_angles.copy_(best_rot_angles)
                 cycles_sans_amelioration = 0
             else:
                 cycles_sans_amelioration += 1
                 if self.verbose:
-                    print(f"Pas de record. (Échecs : {cycles_sans_amelioration}/{self.patience_globale})")
+                    print(f"No record. (Failures: {cycles_sans_amelioration}/{self.patience_globale})")
 
             # --- PRÉPARATION DU CYCLE SUIVANT ---
             current_noise_c *= self.taux_refroidissement
@@ -374,7 +374,7 @@ class FullAtomRsRNASPOptimizer:
             
             if current_noise_c > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
                 if self.verbose:
-                    print(f"Application du SHAKE. Retour à la meilleure conformation et ajout de bruit.")
+                    print(f"Applying SHAKE. Returning to the best conformation and adding noise.")
                 with torch.no_grad():
                     self.ref_coords.copy_(best_ref_coords)
                     self.rot_angles.copy_(best_rot_angles)
@@ -385,7 +385,7 @@ class FullAtomRsRNASPOptimizer:
                 torch.cuda.empty_cache()
 
         if self.verbose:
-            print("\n Optimisation terminée.")
+            print("\n Optimization finished.")
         
         with torch.no_grad():
             self.ref_coords.copy_(best_ref_coords)
@@ -402,5 +402,5 @@ class FullAtomRsRNASPOptimizer:
         out_ppdb.to_pdb(path=self.output_path)
         
         if self.verbose:
-            print(f"Fichier sauvegardé : {self.output_path}")
-            print(f"Meilleur score : {self.best_score:.4f}")
+            print(f"File saved: {self.output_path}")
+            print(f"Best score: {self.best_score:.4f}")
