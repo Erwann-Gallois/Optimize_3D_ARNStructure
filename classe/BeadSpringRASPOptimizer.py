@@ -236,19 +236,17 @@ class BeadSpringRASPOptimizer:
 
     def run_optimization(self):
         """
-        Dynamic optimization without fixed limit of epochs or cycles.
-        
-        - patience_locale : Number of iterations without improvement before finishing a folding phase.
-        - patience_globale : Number of consecutive "shakes" without beating the absolute record before giving up.
-        - taux_refroidissement : Noise reduction factor at each shake (e.g., 0.85).
-        - bruit_min : Threshold below which the shake is considered negligible.
+        Optimisation par Basin Hopping / Simulated Annealing.
+        Capture le meilleur minimum local à chaque phase et le compare au record global.
         """
+        # Initialisation de l'optimiseur sur les coordonnées actuelles
         optimizer = torch.optim.Adam([self.coords], lr=self.lr)
 
+        # Stockage du record absolu (global)
         best_coords = self.coords.detach().clone()
         self.best_score = float('inf')
         
-        # Initial noise replaces the "number of cycles" concept
+        # Gestion du bruit et des cycles
         current_noise = self.noise_coords
         cycles_sans_amelioration = 0
         cycle_count = 0
@@ -257,88 +255,101 @@ class BeadSpringRASPOptimizer:
             print(f"Using device: {self.device}")
             print(f"Starting dynamic optimization (Basin Hopping/Annealing Algorithm)...")
 
-        # EXTERNAL LOOP: Controlled by noise level and successive failures
+        # --- BOUCLE EXTERNE : Exploration des bassins énergétique (Global) ---
         while current_noise > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
             cycle_count += 1
             if self.verbose:
                 print(f"\n--- Exploration Phase {cycle_count} (Shake noise: {current_noise:.4f}Å) ---")
             
+            # Variables pour capturer le meilleur moment de CETTE phase locale
+            phase_best_score = float('inf')
+            phase_best_coords = self.coords.detach().clone()
+            
             patience_counter = 0
             prev_loss = float('inf')
             epoch = 0
             
-            # INTERNAL LOOP: Replaces 'for epoch in range(num_epochs)'
+            # --- BOUCLE INTERNE : Descente de gradient locale (Adam) ---
             while True:
                 optimizer.zero_grad()
-                total, bond, rasp, angle, repulsion = self.total_energy()
+                total, bond, rasp, repulsion, angle = self.total_energy()
                 total.backward()
                 optimizer.step()
 
                 current_loss = total.item()
 
-                if current_loss < self.best_score:
-                    self.best_score = current_loss
-                    best_coords.copy_(self.coords.detach())
-                # Local stop condition (ΔE)
+                # Sauvegarde du meilleur point rencontré durant la descente actuelle
+                if current_loss < phase_best_score:
+                    phase_best_score = current_loss
+                    phase_best_coords.copy_(self.coords.detach())
+
+                # Condition d'arrêt local basée sur la variation d'énergie (ΔE)
                 delta_loss = abs(prev_loss - current_loss)
                 if delta_loss < self.min_delta:
                     patience_counter += 1
                 else:
-                    patience_counter = 0  # Found a good slope, reset
+                    patience_counter = 0  # On progresse encore, on réinitialise la patience
                 
                 prev_loss = current_loss
                 epoch += 1
 
-                # Display every 100 steps to monitor
-                if epoch % 1000 == 0:
-                    if self.verbose:
-                        print(f"  Iteration {epoch:4d} | Total: {current_loss:.4f} | FENE: {bond:.4f} | RASP: {rasp:.4f} | Angle: {angle:.4f} | Repulsion: {repulsion:.4f}")
+                # Affichage de suivi toutes les 1000 itérations
+                if epoch % 1000 == 0 and self.verbose:
+                    print(f"  Iteration {epoch:4d} | Total: {current_loss:.4f} | FENE: {bond:.4f} | "
+                          f"RASP: {rasp:.4f} | Repulsion: {repulsion:.4f} | Angle: {angle:.4f}")
 
-                # Local phase stop if stuck in a minimum
+                # Arrêt si le minimum local est stabilisé
                 if patience_counter >= self.patience_locale:
                     if self.verbose:
-                        print(f"  Local minimum reached in {epoch} iterations.")
+                        print(f"Local minimum reached in {epoch} iterations.")
                     break
                 
-                # Safety: relief valve to avoid a pure infinite loop (e.g., oscillation)
-                if epoch > 10000:
+                # Valve de sécurité pour éviter les boucles infinies ou oscillations
+                if epoch >= 10000:
                     if self.verbose:
-                        print(f"  Local phase too long, safety cutoff at 10000.")
+                        print(f"Local phase too long, safety cutoff at 10000.")
                     break
 
-            # --- CYCLE SUMMARY ---
-            # Is this local minimum the best ever found?
-            if current_loss < (self.best_score - self.min_delta):
+            # --- BILAN DE LA PHASE : Comparaison avec le Record Global ---
+            # On compare le meilleur score de cette phase avec le record absolu de l'instance
+            if phase_best_score < (self.best_score - self.min_delta):
                 if self.verbose:
-                    print(f"  New absolute record! {self.best_score:.4f} -> {current_loss:.4f}")
-                self.best_score = current_loss
-                best_coords.copy_(self.coords.detach())
-                cycles_sans_amelioration = 0  # Reset failure counter to zero
+                    print(f"New absolute record! {self.best_score:.4f} -> {phase_best_score:.4f}")
+                
+                self.best_score = phase_best_score
+                best_coords.copy_(phase_best_coords)
+                cycles_sans_amelioration = 0  # On a trouvé un nouveau bassin, on réinitialise les échecs
             else:
                 cycles_sans_amelioration += 1
                 if self.verbose:
-                    print(f"  No record. (Unsuccessful attempts : {cycles_sans_amelioration}/{self.patience_globale})")
+                    print(f"No record. Phase best: {phase_best_score:.2f} | Global best: {self.best_score:.2f} "
+                          f"({cycles_sans_amelioration}/{self.patience_globale})")
 
-            # --- NEXT CYCLE PREPARATION ---
-            current_noise *= self.taux_refroidissement  # The system "cools"
+            # --- PRÉPARATION DU CYCLE SUIVANT (SHAKE) ---
+            current_noise *= self.taux_refroidissement  # Le système "refroidit"
             
             if current_noise > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
                 if self.verbose:
-                    print(f"  -> Applying SHAKE. Returning to the best conformation and adding noise.")
+                    print(f"Applying SHAKE. Returning to the best conformation and adding noise.")
+                
                 with torch.no_grad():
+                    # On repart toujours de la meilleure structure connue
                     self.coords.copy_(best_coords)
+                    # On applique une perturbation aléatoire
                     self.coords.add_(torch.randn_like(self.coords) * current_noise)
-                # Reset the optimizer to clear the "memory" (momentum) of previous gradients
+                
+                # Réinitialisation de l'optimiseur pour oublier les moments/gradients de la phase précédente
                 optimizer = torch.optim.Adam([self.coords], lr=self.lr)
 
-        # --- END OF OPTIMIZATION ---
+        # --- FIN DE L'OPTIMISATION ---
         if self.verbose:
-            print("\n Global optimization finished!")
+            print("\nGlobal optimization finished!")
             if current_noise <= self.bruit_min:
-                print("Reason: The system has cooled (the noise has become too weak to break the bonds).")
+                print("Reason: Noise level reached the minimum threshold (bruit_min).")
             else:
-                print(f"Reason: Inability to find a better folding after {self.patience_globale} consecutive shakes.")
+                print(f"Reason: Failed to improve after {self.patience_globale} consecutive attempts.")
 
+        # On charge la meilleure structure finale avant la sauvegarde
         with torch.no_grad():
             self.coords.copy_(best_coords)
 
@@ -396,9 +407,17 @@ class BeadSpringRASPOptimizer:
         io = PDBIO()
         io.set_structure(structure)
         io.save(self.output_path)
+        arena_executable = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "Arena", "Arena")
+        )
+        if not os.path.isfile(arena_executable):
+            if self.verbose:
+                print(f"Arena executable not found: {arena_executable}")
+            return
+
         # Split each space of your command into a list element
         commande = [
-            "./../Arena/Arena", 
+            arena_executable,
             self.output_path, 
             self.output_path.replace(".pdb", "_full_atom.pdb"), 
             "5"

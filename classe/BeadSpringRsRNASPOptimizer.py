@@ -250,86 +250,121 @@ class BeadSpringRsRNASPOptimizer:
         return bond + rsrnasp + repulsion + angle, bond, rsrnasp, repulsion, angle
 
     def run_optimization(self):
+        """
+        Optimisation par Basin Hopping / Simulated Annealing.
+        Capture le meilleur minimum local à chaque phase et le compare au record global.
+        """
+        # Initialisation de l'optimiseur sur les coordonnées actuelles
         optimizer = torch.optim.Adam([self.coords], lr=self.lr)
 
+        # Stockage du record absolu (global)
         best_coords = self.coords.detach().clone()
         self.best_score = float('inf')
+        
+        # Gestion du bruit et des cycles
         current_noise = self.noise_coords
         cycles_sans_amelioration = 0
         cycle_count = 0
 
         if self.verbose:
-            print(f"Starting rsRNASP optimization (Basin Hopping/Annealing)")
-            print(f"Device: {self.device} | Initial noise: {current_noise}Å | LR: {self.lr}")
+            print(f"Using device: {self.device}")
+            print(f"Starting dynamic optimization (Basin Hopping/Annealing Algorithm)...")
 
+        # --- BOUCLE EXTERNE : Exploration des bassins énergétique (Global) ---
         while current_noise > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
             cycle_count += 1
             if self.verbose:
-                print(f"\n--- Exploration Phase {cycle_count} (Shake: {current_noise:.4f}Å) ---")
+                print(f"\n--- Exploration Phase {cycle_count} (Shake noise: {current_noise:.4f}Å) ---")
+            
+            # Variables pour capturer le meilleur moment de CETTE phase locale
+            phase_best_score = float('inf')
+            phase_best_coords = self.coords.detach().clone()
             
             patience_counter = 0
             prev_loss = float('inf')
             epoch = 0
             
+            # --- BOUCLE INTERNE : Descente de gradient locale (Adam) ---
             while True:
                 optimizer.zero_grad()
                 total, bond, rsrnasp, repulsion, angle = self.total_energy()
                 total.backward()
-                
-                # Clipping pour la stabilité physique
-                torch.nn.utils.clip_grad_norm_([self.coords], max_norm=5.0)
                 optimizer.step()
 
                 current_loss = total.item()
 
-                if current_loss < self.best_score:
-                    self.best_score = current_loss
-                    best_coords.copy_(self.coords.detach())
+                # Sauvegarde du meilleur point rencontré durant la descente actuelle
+                if current_loss < phase_best_score:
+                    phase_best_score = current_loss
+                    phase_best_coords.copy_(self.coords.detach())
 
+                # Condition d'arrêt local basée sur la variation d'énergie (ΔE)
                 delta_loss = abs(prev_loss - current_loss)
                 if delta_loss < self.min_delta:
                     patience_counter += 1
                 else:
-                    patience_counter = 0 
+                    patience_counter = 0  # On progresse encore, on réinitialise la patience
                 
                 prev_loss = current_loss
                 epoch += 1
 
-                if self.verbose and epoch % 1000 == 0:
-                    print(f"  Iter {epoch:4d} | Total: {current_loss:.4f} | FENE: {bond:.4f} | rsRNASP: {rsrnasp:.4f} | Repulsion: {repulsion:.4f} | Angle: {angle:.4f}")
+                # Affichage de suivi toutes les 1000 itérations
+                if epoch % 1000 == 0 and self.verbose:
+                    print(f"  Iteration {epoch:4d} | Total: {current_loss:.4f} | FENE: {bond:.4f} | "
+                          f"rsRNASP: {rsrnasp:.4f} | Repulsion: {repulsion:.4f} | Angle: {angle:.4f}")
 
+                # Arrêt si le minimum local est stabilisé
                 if patience_counter >= self.patience_locale:
-                    if self.verbose: print(f"  Local minimum reached in {epoch} iterations.")
+                    if self.verbose:
+                        print(f"Local minimum reached in {epoch} iterations.")
                     break
                 
-                if epoch > 10000:
-                    if self.verbose: print(f"  Safety cutoff at 10000 iterations.")
+                # Valve de sécurité pour éviter les boucles infinies ou oscillations
+                if epoch >= 10000:
+                    if self.verbose:
+                        print(f"Local phase too long, safety cutoff at 10000.")
                     break
 
-            if current_loss < (self.best_score - self.min_delta):
-                if self.verbose: print(f"  New absolute record! {self.best_score:.4f} -> {current_loss:.4f}")
-                self.best_score = current_loss
-                best_coords.copy_(self.coords.detach())
-                cycles_sans_amelioration = 0
+            # --- BILAN DE LA PHASE : Comparaison avec le Record Global ---
+            # On compare le meilleur score de cette phase avec le record absolu de l'instance
+            if phase_best_score < (self.best_score - self.min_delta):
+                if self.verbose:
+                    print(f"New absolute record! {self.best_score:.4f} -> {phase_best_score:.4f}")
+                
+                self.best_score = phase_best_score
+                best_coords.copy_(phase_best_coords)
+                cycles_sans_amelioration = 0  # On a trouvé un nouveau bassin, on réinitialise les échecs
             else:
                 cycles_sans_amelioration += 1
-                if self.verbose: print(f"  No improvement ({cycles_sans_amelioration}/{self.patience_globale}).")
+                if self.verbose:
+                    print(f"No record. Phase best: {phase_best_score:.2f} | Global best: {self.best_score:.2f} "
+                          f"({cycles_sans_amelioration}/{self.patience_globale})")
 
-            current_noise *= self.taux_refroidissement
+            # --- PRÉPARATION DU CYCLE SUIVANT (SHAKE) ---
+            current_noise *= self.taux_refroidissement  # Le système "refroidit"
             
             if current_noise > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
+                if self.verbose:
+                    print(f"Applying SHAKE. Returning to the best conformation and adding noise.")
+                
                 with torch.no_grad():
+                    # On repart toujours de la meilleure structure connue
                     self.coords.copy_(best_coords)
+                    # On applique une perturbation aléatoire
                     self.coords.add_(torch.randn_like(self.coords) * current_noise)
+                
+                # Réinitialisation de l'optimiseur pour oublier les moments/gradients de la phase précédente
                 optimizer = torch.optim.Adam([self.coords], lr=self.lr)
 
+        # --- FIN DE L'OPTIMISATION ---
         if self.verbose:
             print("\nGlobal optimization finished!")
             if current_noise <= self.bruit_min:
-                print("System cooled (minimum noise reached).")
+                print("Reason: Noise level reached the minimum threshold (bruit_min).")
             else:
-                print("Early stop: global score stagnation.")
+                print(f"Reason: Failed to improve after {self.patience_globale} consecutive attempts.")
 
+        # On charge la meilleure structure finale avant la sauvegarde
         with torch.no_grad():
             self.coords.copy_(best_coords)
 
@@ -386,9 +421,17 @@ class BeadSpringRsRNASPOptimizer:
         io = PDBIO()
         io.set_structure(structure)
         io.save(self.output_path)
+        arena_executable = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "Arena", "Arena")
+        )
+        if not os.path.isfile(arena_executable):
+            if self.verbose:
+                print(f"Arena executable not found: {arena_executable}")
+            return
+
         # On sépare chaque espace de votre commande en un élément de liste
         commande = [
-            "./../Arena/Arena", 
+            arena_executable,
             self.output_path, 
             self.output_path.replace(".pdb", "_full_atom.pdb"), 
             "5"
