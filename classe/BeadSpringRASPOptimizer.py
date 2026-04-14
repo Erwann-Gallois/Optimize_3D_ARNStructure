@@ -5,6 +5,8 @@ from biopandas.pdb import PandasPdb
 from parse_rasp_potentials import load_rasp_potentials, get_rasp_type
 from Bio.PDB import Structure, Model, Chain, Residue, Atom, PDBIO, MMCIFIO, PDBParser
 import subprocess
+import click
+from tqdm import tqdm
 
 class BeadSpringRASPOptimizer:
     def __init__(
@@ -18,15 +20,16 @@ class BeadSpringRASPOptimizer:
         l0=5.726,
         k_angle=30.0,   # Bending stiffness (adjusted for RASP)
         theta0=139.07,  # Calculated mean angle
-        type_RASP="all",
-        score_weight=50.0,
+        type_RASP="c3",
+        score_weight=1.0,
         verbose=True,
         patience_locale=100, 
         min_delta=1e-4, 
         patience_globale=5, 
         taux_refroidissement=0.85, 
         bruit_min=0.01,
-        export_cif=False
+        export_cif=False,
+        k_max = 8
     ):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.lr = lr
@@ -44,6 +47,7 @@ class BeadSpringRASPOptimizer:
         # RASP parameters
         self.type_RASP = type_RASP
         self.rasp_weight = float(score_weight)
+        self.k_max = int(k_max)
 
         # FENE-Fraenkel parameters
         self.k = float(k)
@@ -61,10 +65,10 @@ class BeadSpringRASPOptimizer:
             taille_mat, dict_pots = load_rasp_potentials(path)
             self.convert_dict_to_tensor(dict_pots, taille_mat)
             if self.verbose:
-                print(f"RASP potentials '{self.type_RASP}' loaded.")
+                click.secho(f"RASP potentials '{self.type_RASP}' loaded.", fg='green')
         else:
             if self.verbose:
-                print(f"Potential file not found: {path}, RASP ignored.")
+                click.secho(f"Potential file not found: {path}, RASP ignored.", fg='red')
             self.potential_tensor = None
 
     def convert_dict_to_tensor(self, dict_pots, taille_mat):
@@ -80,13 +84,8 @@ class BeadSpringRASPOptimizer:
         bead_rows = []
 
         for i, nt in enumerate(sequence):
-            if i == 0:
-                current_pos = torch.zeros(3)
-            else:
-                direction = torch.randn(3)
-                direction /= (torch.norm(direction) + 1e-8)
-                current_pos = torch.tensor(bead_coords[-1]) + direction * self.l0
-            bead_coords.append(current_pos.tolist())
+            # Initial linear arrangement along x-axis
+            bead_coords.append([i * self.l0, 0.0, 0.0])
             
             # Store minimal necessary info for setup_pairs and save_pdb
             row = {
@@ -114,7 +113,9 @@ class BeadSpringRASPOptimizer:
         self.rasp_sep = sep[mask_rasp].to(self.device)
 
         if getattr(self, 'potential_tensor', None) is not None:
-            self.k_vals = torch.clamp(self.rasp_sep - 1, 0, 5)
+            # INTEGRATION DU FACTEUR TOPOLOGIQUE (k)
+            # Le seuil optimal pour RASP-ALL est 5 (les interactions au-delà sont non-locales)
+            self.k_vals = torch.clamp(self.rasp_sep, max=self.k_max).long()
 
             t_vals = []
             for row in self.template_rows:
@@ -230,9 +231,9 @@ class BeadSpringRASPOptimizer:
     def total_energy(self):
         bond = self.fene_fraenkel_bond_energy()
         rasp = self.rasp_like_energy()
-        angle = self.valence_angle_energy()
-        repulsion = self.excluded_volume_energy()
-        return bond + rasp + angle + repulsion, bond, rasp, angle, repulsion
+        # angle = self.valence_angle_energy()
+        # repulsion = self.excluded_volume_energy()
+        return bond + rasp, bond, rasp
 
     def run_optimization(self):
         """
@@ -252,14 +253,15 @@ class BeadSpringRASPOptimizer:
         cycle_count = 0
 
         if self.verbose:
-            print(f"Using device: {self.device}")
-            print(f"Starting dynamic optimization (Basin Hopping/Annealing Algorithm)...")
+            click.secho(f'🚀 Using device: {self.device}', fg='cyan', bold=True)
+            click.secho("Starting dynamic optimization...", fg='cyan')
+
+        # --- BARRE GLOBALE (Cycles de Shake) ---
+        shake_pbar = tqdm(desc="Global Optimization", unit=" cycles", dynamic_ncols=True)
 
         # --- BOUCLE EXTERNE : Exploration des bassins énergétique (Global) ---
         while current_noise > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
             cycle_count += 1
-            if self.verbose:
-                print(f"\n--- Exploration Phase {cycle_count} (Shake noise: {current_noise:.4f}Å) ---")
             
             # Variables pour capturer le meilleur moment de CETTE phase locale
             phase_best_score = float('inf')
@@ -269,10 +271,13 @@ class BeadSpringRASPOptimizer:
             prev_loss = float('inf')
             epoch = 0
             
+            # --- BARRE LOCALE (Itérations Adam) ---
+            pbar = tqdm(total=10000, desc=f"  └─ Phase {cycle_count}", unit="it", leave=False, dynamic_ncols=True)
+            
             # --- BOUCLE INTERNE : Descente de gradient locale (Adam) ---
             while True:
                 optimizer.zero_grad()
-                total, bond, rasp, repulsion, angle = self.total_energy()
+                total, bond, rasp = self.total_energy()
                 total.backward()
                 optimizer.step()
 
@@ -293,45 +298,43 @@ class BeadSpringRASPOptimizer:
                 prev_loss = current_loss
                 epoch += 1
 
-                # Affichage de suivi toutes les 1000 itérations
-                if epoch % 1000 == 0 and self.verbose:
-                    print(f"  Iteration {epoch:4d} | Total: {current_loss:.4f} | FENE: {bond:.4f} | "
-                          f"RASP: {rasp:.4f} | Repulsion: {repulsion:.4f} | Angle: {angle:.4f}")
+                pbar.update(1)
+                if epoch % 100 == 0:
+                    pbar.set_postfix({
+                        "Total": f"{current_loss:.2f}",
+                        "Bond": f"{bond.item():.2f}",
+                        "RASP": f"{rasp.item():.2f}"
+                    })
 
                 # Arrêt si le minimum local est stabilisé
-                if patience_counter >= self.patience_locale:
-                    if self.verbose:
-                        print(f"Local minimum reached in {epoch} iterations.")
+                if patience_counter >= self.patience_locale or epoch >= 10000:
                     break
-                
-                # Valve de sécurité pour éviter les boucles infinies ou oscillations
-                if epoch >= 10000:
-                    if self.verbose:
-                        print(f"Local phase too long, safety cutoff at 10000.")
-                    break
+            
+            pbar.close()
 
             # --- BILAN DE LA PHASE : Comparaison avec le Record Global ---
             # On compare le meilleur score de cette phase avec le record absolu de l'instance
             if phase_best_score < (self.best_score - self.min_delta):
                 if self.verbose:
-                    print(f"New absolute record! {self.best_score:.4f} -> {phase_best_score:.4f}")
+                    shake_pbar.write(click.style(f"New record: {phase_best_score:.4f}", fg='green', bold=True))
                 
                 self.best_score = phase_best_score
                 best_coords.copy_(phase_best_coords)
                 cycles_sans_amelioration = 0  # On a trouvé un nouveau bassin, on réinitialise les échecs
             else:
                 cycles_sans_amelioration += 1
-                if self.verbose:
-                    print(f"No record. Phase best: {phase_best_score:.2f} | Global best: {self.best_score:.2f} "
-                          f"({cycles_sans_amelioration}/{self.patience_globale})")
+
+            shake_pbar.update(1)
+            shake_pbar.set_postfix({
+                "Best": f"{self.best_score:.2f}", 
+                "Fail": f"{cycles_sans_amelioration}/{self.patience_globale}",
+                "Noise": f"{current_noise:.3f}"
+            })
 
             # --- PRÉPARATION DU CYCLE SUIVANT (SHAKE) ---
             current_noise *= self.taux_refroidissement  # Le système "refroidit"
             
-            if current_noise > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
-                if self.verbose:
-                    print(f"Applying SHAKE. Returning to the best conformation and adding noise.")
-                
+            if current_noise > self.bruit_min and cycles_sans_amelioration < self.patience_globale:               
                 with torch.no_grad():
                     # On repart toujours de la meilleure structure connue
                     self.coords.copy_(best_coords)
@@ -341,13 +344,15 @@ class BeadSpringRASPOptimizer:
                 # Réinitialisation de l'optimiseur pour oublier les moments/gradients de la phase précédente
                 optimizer = torch.optim.Adam([self.coords], lr=self.lr)
 
+        shake_pbar.close()
+
         # --- FIN DE L'OPTIMISATION ---
         if self.verbose:
-            print("\nGlobal optimization finished!")
+            click.secho("\nGlobal optimization finished!", fg='green', bold=True)
             if current_noise <= self.bruit_min:
-                print("Reason: Noise level reached the minimum threshold (bruit_min).")
+                click.secho("Reason: Minimum noise reached.", fg="yellow")
             else:
-                print(f"Reason: Failed to improve after {self.patience_globale} consecutive attempts.")
+                click.secho(f"Reason: Max patience reached ({self.patience_globale} fails).", fg="yellow")
 
         # On charge la meilleure structure finale avant la sauvegarde
         with torch.no_grad():
@@ -412,7 +417,7 @@ class BeadSpringRASPOptimizer:
         )
         if not os.path.isfile(arena_executable):
             if self.verbose:
-                print(f"Arena executable not found: {arena_executable}")
+                click.secho(f"Arena executable not found: {arena_executable}", fg='red')
             return
 
         # Split each space of your command into a list element
@@ -429,14 +434,14 @@ class BeadSpringRASPOptimizer:
             
             # Display Arena output
             if self.verbose:
-                print(f"Well-formatted PDB file saved: {self.output_path.replace('.pdb', '_full_atom.pdb')}")
-                print(f"Best score: {self.best_score}")
+                click.secho(f"Well-formatted PDB file saved: {self.output_path.replace('.pdb', '_full_atom.pdb')}", fg='green')
+                click.secho(f"Best score: {self.best_score}", fg='green')
             # os.remove(self.output_path)
 
         except subprocess.CalledProcessError as e:
             if self.verbose:
-                print("Error during Arena execution:")
-                print(e.stderr)
+                click.secho("Error during Arena execution:", fg='red')
+                click.secho(e.stderr, fg='red')
 
         if self.export_cif:
             self.save_as_cif(self.output_path.replace(".pdb", "_full_atom.pdb"))
@@ -445,7 +450,7 @@ class BeadSpringRASPOptimizer:
         """Converts a PDB file to CIF format using BioPython."""
         if not os.path.exists(pdb_path):
             if self.verbose:
-                print(f"Error: File {pdb_path} not found for CIF export.")
+                click.secho(f"Error: File {pdb_path} not found for CIF export.", fg='red')
             return
         
         cif_path = pdb_path.replace(".pdb", ".cif")
@@ -455,4 +460,4 @@ class BeadSpringRASPOptimizer:
         io.set_structure(structure)
         io.save(cif_path)
         if self.verbose:
-            print(f"Structure also saved in CIF format: {cif_path}")
+            click.secho(f"Structure also saved in CIF format: {cif_path}", fg='green')

@@ -5,7 +5,8 @@ from biopandas.pdb import PandasPdb
 from parse_dfire_potentials import load_dfire_potentials, get_dfire_type
 from Bio.PDB import Structure, Model, Chain, Residue, Atom, PDBIO, MMCIFIO, PDBParser
 import subprocess
-
+import click
+from tqdm import tqdm
 class BeadSpringDFIREOptimizer:
     def __init__(
         self,
@@ -66,10 +67,11 @@ class BeadSpringDFIREOptimizer:
             dict_pots = load_dfire_potentials(path)
             self.convert_dict_to_tensor(dict_pots)
             if self.verbose:
-                print(f"DFIRE potentials loaded.")
+                click.secho(f"DFIRE potentials loaded successfully from {path}.", fg='green')
         else:
             if self.verbose:
-                print(f"Potential file not found: {path}, DFIRE ignored.")
+                click.secho(f"Potential file not found: {path}, DFIRE ignored.", fg='red')
+                return 0
             self.potential_tensor = None
 
     def convert_dict_to_tensor(self, dict_pots):
@@ -100,14 +102,7 @@ class BeadSpringDFIREOptimizer:
         bead_rows = []
 
         for i, nt in enumerate(sequence):
-            if i == 0:
-                current_pos = torch.zeros(3)
-            else:
-                direction = torch.randn(3)
-                direction /= (torch.norm(direction) + 1e-8)
-                current_pos = torch.tensor(bead_coords[-1]) + direction * self.l0
-            bead_coords.append(current_pos.tolist())
-            
+            bead_coords.append([i * self.l0, 0.0, 0.0])  # Initial linear conformation
             # Store minimal necessary info for setup_pairs and save_pdb
             row = {
                 'residue_name': nt,
@@ -212,21 +207,35 @@ class BeadSpringDFIREOptimizer:
         max_dist = 19.6
         num_bins = self.potential_tensor.size(2)
         
-        # Linear interpolation for the score
+        # Interpolation Catmull-Rom
         d_scaled = dists / step
         d_clamp = torch.clamp(d_scaled, 0.0, float(num_bins - 1.0001))
         
-        d0 = torch.floor(d_clamp).long()
-        d1 = d0 + 1
-        alpha = d_clamp - d0.float()
+        i = torch.floor(d_clamp).long()
+        t = d_clamp - i.float()
         
-        energy0 = self.potential_tensor[self.t1_vals, self.t2_vals, d0]
-        energy1 = self.potential_tensor[self.t1_vals, self.t2_vals, d1]
+        # Gestion des bords pour les points de contrôle
+        idx0 = torch.clamp(i - 1, min=0)
+        idx1 = i
+        idx2 = torch.clamp(i + 1, max=num_bins - 1)
+        idx3 = torch.clamp(i + 2, max=num_bins - 1)
         
-        interp_energy = (1.0 - alpha) * energy0 + alpha * energy1
-        # print(interp_energy[0:10])
-        # Sigmoid cutoff for smooth decay around 19.6A (as in RASP)
-        # We can also use a harsh mask: (dists < max_dist).float()
+        p0 = self.potential_tensor[self.t1_vals, self.t2_vals, idx0]
+        p1 = self.potential_tensor[self.t1_vals, self.t2_vals, idx1]
+        p2 = self.potential_tensor[self.t1_vals, self.t2_vals, idx2]
+        p3 = self.potential_tensor[self.t1_vals, self.t2_vals, idx3]
+        
+        t2 = t * t
+        t3 = t2 * t
+        
+        f0 = -0.5 * t3 + t2 - 0.5 * t
+        f1 = 1.5 * t3 - 2.5 * t2 + 1.0
+        f2 = -1.5 * t3 + 2.0 * t2 + 0.5 * t
+        f3 = 0.5 * t3 - 0.5 * t2
+        
+        interp_energy = f0 * p0 + f1 * p1 + f2 * p2 + f3 * p3
+        
+        # Sigmoid cutoff pour une décroissance douce autour de 19.6A
         cutoff = torch.sigmoid(2.0 * (max_dist - dists))
         dfire_score = torch.sum(interp_energy * cutoff)
         
@@ -247,131 +256,122 @@ class BeadSpringDFIREOptimizer:
     def total_energy(self):
         bond = self.fene_fraenkel_bond_energy()
         dfire = self.dfire_like_energy()
-        repulsion = self.excluded_volume_energy()
-        angle = self.valence_angle_energy()
-        return bond + dfire + repulsion + angle, bond, dfire, repulsion, angle
+        # repulsion = self.excluded_volume_energy()
+        # angle = self.valence_angle_energy()
+        return bond + dfire, bond, dfire
 
     def run_optimization(self):
         """
-        Optimisation par Basin Hopping / Simulated Annealing.
-        Capture le meilleur minimum local à chaque phase et le compare au record global.
+        Optimisation par Basin Hopping / Simulated Annealing avec barres tqdm.
         """
-        # Initialisation de l'optimiseur sur les coordonnées actuelles
+        # Initialisation
         optimizer = torch.optim.Adam([self.coords], lr=self.lr)
-
-        # Stockage du record absolu (global)
         best_coords = self.coords.detach().clone()
         self.best_score = float('inf')
         
-        # Gestion du bruit et des cycles
         current_noise = self.noise_coords
         cycles_sans_amelioration = 0
         cycle_count = 0
 
         if self.verbose:
-            print(f"Using device: {self.device}")
-            print(f"Starting dynamic optimization (Basin Hopping/Annealing Algorithm)...")
+            click.secho(f'🚀 Using device: {self.device}', fg='cyan', bold=True)
+            click.secho("Starting dynamic optimization...", fg='cyan')
 
-        # --- BOUCLE EXTERNE : Exploration des bassins énergétique (Global) ---
+        # --- BARRE GLOBALE (Cycles de Shake) ---
+        # On ne connaît pas le total, donc on laisse vide.
+        shake_pbar = tqdm(desc="Global Optimization", unit=" cycles", dynamic_ncols=True)
+
         while current_noise > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
             cycle_count += 1
-            if self.verbose:
-                print(f"\n--- Exploration Phase {cycle_count} (Shake noise: {current_noise:.4f}Å) ---")
             
-            # Variables pour capturer le meilleur moment de CETTE phase locale
             phase_best_score = float('inf')
             phase_best_coords = self.coords.detach().clone()
             
             patience_counter = 0
             prev_loss = float('inf')
             epoch = 0
+
+            # --- BARRE LOCALE (Itérations Adam) ---
+            # leave=False permet de l'effacer quand la phase est finie
+            pbar = tqdm(total=10000, desc=f"  └─ Phase {cycle_count}", unit="it", leave=False, dynamic_ncols=True)
             
-            # --- BOUCLE INTERNE : Descente de gradient locale (Adam) ---
             while True:
                 optimizer.zero_grad()
-                total, bond, dfire, repulsion, angle = self.total_energy()
+                total, bond, dfire = self.total_energy()
                 total.backward()
                 optimizer.step()
 
                 current_loss = total.item()
 
-                # Sauvegarde du meilleur point rencontré durant la descente actuelle
                 if current_loss < phase_best_score:
                     phase_best_score = current_loss
                     phase_best_coords.copy_(self.coords.detach())
 
-                # Condition d'arrêt local basée sur la variation d'énergie (ΔE)
                 delta_loss = abs(prev_loss - current_loss)
                 if delta_loss < self.min_delta:
                     patience_counter += 1
                 else:
-                    patience_counter = 0  # On progresse encore, on réinitialise la patience
+                    patience_counter = 0
                 
                 prev_loss = current_loss
                 epoch += 1
 
-                # Affichage de suivi toutes les 1000 itérations
-                if epoch % 1000 == 0 and self.verbose:
-                    print(f"  Iteration {epoch:4d} | Total: {current_loss:.4f} | FENE: {bond:.4f} | "
-                          f"DFIRE: {dfire:.4f} | Repulsion: {repulsion:.4f} | Angle: {angle:.4f}")
+                # Mise à jour de la barre locale
+                pbar.update(1)
+                if epoch % 100 == 0:
+                    pbar.set_postfix({
+                        "Total": f"{current_loss:.2f}",
+                        "Bond": f"{bond.item():.2f}",
+                        "DFIRE": f"{dfire.item():.2f}"
+                    })                                                  
 
-                # Arrêt si le minimum local est stabilisé
-                if patience_counter >= self.patience_locale:
-                    if self.verbose:
-                        print(f"Local minimum reached in {epoch} iterations.")
+                # Conditions d'arrêt
+                if patience_counter >= self.patience_locale or epoch >= 10000:
                     break
-                
-                # Valve de sécurité pour éviter les boucles infinies ou oscillations
-                if epoch >= 10000:
-                    if self.verbose:
-                        print(f"Local phase too long, safety cutoff at 10000.")
-                    break
+            
+            pbar.close() # On ferme la barre locale proprement ici (une seule fois)
 
-            # --- BILAN DE LA PHASE : Comparaison avec le Record Global ---
-            # On compare le meilleur score de cette phase avec le record absolu de l'instance
+            # --- BILAN DE LA PHASE ---
             if phase_best_score < (self.best_score - self.min_delta):
                 if self.verbose:
-                    print(f"New absolute record! {self.best_score:.4f} -> {phase_best_score:.4f}")
+                    # Utiliser tqdm.write pour ne pas casser les barres
+                    shake_pbar.write(click.style(f"🌟 New record: {phase_best_score:.4f}", fg='green', bold=True))
                 
                 self.best_score = phase_best_score
                 best_coords.copy_(phase_best_coords)
-                cycles_sans_amelioration = 0  # On a trouvé un nouveau bassin, on réinitialise les échecs
+                cycles_sans_amelioration = 0
             else:
                 cycles_sans_amelioration += 1
-                if self.verbose:
-                    print(f"No record. Phase best: {phase_best_score:.2f} | Global best: {self.best_score:.2f} "
-                          f"({cycles_sans_amelioration}/{self.patience_globale})")
 
-            # --- PRÉPARATION DU CYCLE SUIVANT (SHAKE) ---
-            current_noise *= self.taux_refroidissement  # Le système "refroidit"
-            
+            # Mise à jour de la barre globale (UNE SEULE FOIS par cycle de shake)
+            shake_pbar.update(1)
+            shake_pbar.set_postfix({
+                "Best": f"{self.best_score:.2f}", 
+                "Fail": f"{cycles_sans_amelioration}/{self.patience_globale}",
+                "Noise": f"{current_noise:.3f}"
+            })
+
+            # --- PRÉPARATION DU SHAKE ---
+            current_noise *= self.taux_refroidissement
             if current_noise > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
-                if self.verbose:
-                    print(f"Applying SHAKE. Returning to the best conformation and adding noise.")
-                
                 with torch.no_grad():
-                    # On repart toujours de la meilleure structure connue
                     self.coords.copy_(best_coords)
-                    # On applique une perturbation aléatoire
                     self.coords.add_(torch.randn_like(self.coords) * current_noise)
-                
-                # Réinitialisation de l'optimiseur pour oublier les moments/gradients de la phase précédente
                 optimizer = torch.optim.Adam([self.coords], lr=self.lr)
 
-        # --- FIN DE L'OPTIMISATION ---
-        if self.verbose:
-            print("\nGlobal optimization finished!")
-            if current_noise <= self.bruit_min:
-                print("Reason: Noise level reached the minimum threshold (bruit_min).")
-            else:
-                print(f"Reason: Failed to improve after {self.patience_globale} consecutive attempts.")
+        shake_pbar.close()
 
-        # On charge la meilleure structure finale avant la sauvegarde
+        # --- FIN ---
+        if self.verbose:
+            click.secho("\nGlobal optimization finished!", fg='green', bold=True)
+            if current_noise <= self.bruit_min:
+                click.secho("Reason: Minimum noise reached.", fg="yellow")
+            else:
+                click.secho(f"Reason: Max patience reached ({self.patience_globale} fails).", fg="yellow")
+
         with torch.no_grad():
             self.coords.copy_(best_coords)
-
         self.save_pdb()
-
     def save_pdb(self):
         # 1. Retrieve optimized coordinates
         coords = self.coords.detach().cpu().numpy()
@@ -428,7 +428,7 @@ class BeadSpringDFIREOptimizer:
         )
         if not os.path.isfile(arena_executable):
             if self.verbose:
-                print(f"Arena executable not found: {arena_executable}")
+                click.secho(f"Arena executable not found: {arena_executable}", fg='red')
             return
 
         # Split each space of your command into a list element
@@ -441,16 +441,16 @@ class BeadSpringDFIREOptimizer:
 
         try:
             # Display Arena output
-            subprocess.run(commande, check=False)
+            result = subprocess.run(commande, capture_output=True, text=True, check=True)
             if self.verbose:
-                print(f"Well-formatted PDB file saved: {self.output_path.replace('.pdb', '_full_atom.pdb')}")
-                print(f"Best score: {self.best_score}")
+                click.secho(f"Well-formatted PDB file saved: {self.output_path.replace('.pdb', '_full_atom.pdb')}", fg='green')
+                click.secho(f"Best score: {self.best_score}", fg='green')
             # os.remove(self.output_path)
 
         except subprocess.CalledProcessError as e:
             if self.verbose:
-                print("Error during Arena execution:")
-                print(e.stderr)
+                click.secho("Error during Arena execution:", fg='red')
+                click.secho(e.stderr, fg='red')
 
         if self.export_cif:
             self.save_as_cif(self.output_path.replace(".pdb", "_full_atom.pdb"))
@@ -459,7 +459,7 @@ class BeadSpringDFIREOptimizer:
         """Converts a PDB file to CIF format using BioPython."""
         if not os.path.exists(pdb_path):
             if self.verbose:
-                print(f"Error: File {pdb_path} not found for CIF export.")
+                click.secho(f"Error: File {pdb_path} not found for CIF export.", fg='red')
             return
         
         cif_path = pdb_path.replace(".pdb", ".cif")
@@ -469,4 +469,4 @@ class BeadSpringDFIREOptimizer:
         io.set_structure(structure)
         io.save(cif_path)
         if self.verbose:
-            print(f"Structure also saved in CIF format: {cif_path}")
+            click.secho(f"Structure also saved in CIF format: {cif_path}", fg='green')

@@ -3,6 +3,10 @@
 INPUT_ARG=$1
 CIF_ARG=$2
 
+echo ""
+read -p "Enter the score weight (default 1.0): " SCORE_WEIGHT 
+SCORE_WEIGHT=${SCORE_WEIGHT:-0.1}
+
 # 2. Optional Parameters (Shared across all runs)
 echo ""
 read -p "Number of epochs before local optimization (default 100): " PATIENCE_LOCALE 
@@ -67,6 +71,7 @@ do
         --k $K \
         --l0 $L0 \
         --bead-atom "$BEAD_ATOM" \
+        --score_weight "$SCORE_WEIGHT" \
         $VERBOSE $CIF_ARG
 done
 

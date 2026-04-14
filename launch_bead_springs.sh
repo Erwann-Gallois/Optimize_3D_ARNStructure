@@ -6,6 +6,11 @@ CIF_ARG=$3
 
 # 3. Optional Parameters
 echo ""
+read -p "Enter the score weight (default 1.0): " SCORE_WEIGHT 
+SCORE_WEIGHT=${SCORE_WEIGHT:-0.1}
+
+# 3. Optional Parameters
+echo ""
 read -p "Number of epochs before local optimization (default 100): " PATIENCE_LOCALE 
 PATIENCE_LOCALE=${PATIENCE_LOCALE:-100}
 
@@ -56,7 +61,7 @@ echo "python main_bead_springs.py $INPUT_ARG --score $SCORE --patience-locale $P
 echo ""
 
 if command -v conda &> /dev/null && [ -n "$CONDA_DEFAULT_ENV" ]; then
-    python main_bead_springs.py $INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --patience-globale $PATIENCE_GLOBALE --min-delta $MIN_DELTA --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --noise-coords $NOISE_COORDS --k $K --l0 $L0 --bead-atom $BEAD_ATOM $VERBOSE $CIF_ARG $OUTPUT_ARG
+    python main_bead_springs.py $INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --patience-globale $PATIENCE_GLOBALE --min-delta $MIN_DELTA --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --noise-coords $NOISE_COORDS --k $K --l0 $L0 --bead-atom $BEAD_ATOM --score_weight $SCORE_WEIGHT $VERBOSE $CIF_ARG $OUTPUT_ARG
 else
-    python3 main_bead_springs.py $INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --patience-globale $PATIENCE_GLOBALE --min-delta $MIN_DELTA --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --noise-coords $NOISE_COORDS --k $K --l0 $L0 --bead-atom $BEAD_ATOM $VERBOSE $CIF_ARG $OUTPUT_ARG
+    python3 main_bead_springs.py $INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --patience-globale $PATIENCE_GLOBALE --min-delta $MIN_DELTA --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --noise-coords $NOISE_COORDS --k $K --l0 $L0 --bead-atom $BEAD_ATOM --score_weight $SCORE_WEIGHT $VERBOSE $CIF_ARG $OUTPUT_ARG
 fi

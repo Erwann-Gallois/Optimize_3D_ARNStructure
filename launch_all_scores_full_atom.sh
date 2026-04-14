@@ -48,7 +48,7 @@ fi
 SCORES=("rasp" "dfire" "rsRNASP")
 
 for SCORE in "${SCORES[@]}"; do
-    CMD_ARGS="$INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --min-delta $MIN_DELTA --patience-globale $PATIENCE_GLOBALE --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --backbone-weight $BACKBONE_WEIGHT --noise-coords $NOISE_COORDINATE --noise-angles $NOISE_ANGLES $VERBOSE $CIF_ARG $OUTPUT_ARG"
+    CMD_ARGS="$INPUT_ARG --score $SCORE --patience-locale $PATIENCE_LOCALE --min-delta $MIN_DELTA --patience-globale $PATIENCE_GLOBALE --taux-refroidissement $TAUX_REFROIDISSEMENT --bruit-min $BRUIT_MIN --backbone-weight $BACKBONE_WEIGHT --noise-coords $NOISE_COORDINATE --noise-angles $NOISE_ANGLES $VERBOSE $CIF_ARG $OUTPUT_ARG --score_weight $SCORE_WEIGHT"
     echo ""
     echo ">>> Running command:"
     echo "python main_full_atom.py $CMD_ARGS"

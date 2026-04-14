@@ -2,6 +2,10 @@ import argparse
 import os
 import sys
 import time
+import click
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
 
 # Add current folder and 'classe' folder to PYTHONPATH for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -11,6 +15,30 @@ from fonction import read_fasta_file, generer_first_structure
 from FullAtomRASPOptimizer import FullAtomRASPOptimizer
 from FullAtomDFIREOptimizer import FullAtomDFIREOptimizer
 from FullAtomRsRNASPOptimizer import FullAtomRsRNASPOptimizer
+
+def display_summary(args, output_path):
+    console = Console()
+    
+    # Création du tableau
+    table = Table(title="📋 Résumé des Paramètres d'Optimisation", title_style="bold magenta")
+
+    # Définition des colonnes
+    table.add_column("Paramètre", style="cyan", no_wrap=True)
+    table.add_column("Valeur", style="green")
+
+    table.add_row("Séquence", args.sequence if args.sequence else args.fasta),
+    table.add_row("Fonction de Score", args.score.upper()),
+    table.add_row("Sortie", output_path),
+    table.add_row("Patience (Local/Globale)", f"{args.patience_locale} / {args.patience_globale}"),
+    table.add_row("Min Delta", str(args.min_delta)),
+    table.add_row("Taux de Refroidissement", str(args.taux_refroidissement)),
+    table.add_row("Bruit minimum", f"{args.bruit_min} Å"),
+    table.add_row("Bruit initial", f"{args.noise_coords} Å"),
+    table.add_row("Bruit sur les angles", f"{args.noise_angles} rad"),
+    table.add_row("Backbone Weight", str(args.backbone_weight)),
+    # Affichage
+    console.print(Panel(table, expand=False, border_style="magenta"))
+
 
 def main():
     parser = argparse.ArgumentParser(description="CLI interface for 3D RNA structure full-atom optimization.")
@@ -37,6 +65,7 @@ def main():
     parser.add_argument("--noise-angles", type=float, default=0.2, help="Noise on angles (default: 15.0)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output during optimization")
     parser.add_argument("--cif", action="store_true", help="Export the final structure in .cif format")
+    parser.add_argument("--confirm", action="store_true", help="Confirm the optimization parameters before running")
     args = parser.parse_args()
 
     # 1. Sequence retrieval
@@ -68,9 +97,6 @@ def main():
     if not os.path.exists(initial_pdb):
         print("Error: Initial structure could not be generated.")
         sys.exit(1)
-        
-
-
     # 3. Optimizer selection
     output_path = args.output if args.output else f"resultat/optimized_fa_{args.score}_{int(time.time())}.pdb"
     
@@ -81,6 +107,16 @@ def main():
         output_path = os.path.join(output_path, filename)
     elif not output_path.lower().endswith('.pdb'):
         output_path += ".pdb"
+
+    if args.confirm:
+        # --- ÉTAPE DE VALIDATION AJOUTÉE ---
+        click.secho("\n📋 RÉSUMÉ DES PARAMÈTRES :", fg='cyan', bold=True)
+        display_summary(args, output_path)
+
+        # Demande de confirmation
+        if not click.confirm(click.style("\n🚀 Souhaitez-vous lancer l'optimisation avec ces paramètres ?", fg='magenta', bold=True), default=True):
+            click.secho("❌ Opération annulée par l'utilisateur.", fg='red')
+            sys.exit(0)
 
     optimizer_classes = {
         "rasp": FullAtomRASPOptimizer,
