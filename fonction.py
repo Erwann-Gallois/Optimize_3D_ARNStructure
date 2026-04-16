@@ -201,3 +201,234 @@ def pandaspdb_vers_cif(ppdb_obj, nom_sortie):
     # 6. Clean up temporary file
     if os.path.exists(temp_pdb):
         os.remove(temp_pdb)
+
+def plot_interpolation_dist(score_type, res1, atom1, res2, atom2, seq_sep=1, num_beads=50, save_path=None):
+    """
+    Trace l'interpolation de l'énergie (DFIRE, RASP, ou rsRNASP) EXACTEMENT telle qu'elle est 
+    implémentée dans les classes BeadSpring respectives (Catmull-Rom, clamping, cutoff, poids).
+    """
+    import os
+    import torch
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # Importation locale des parseurs
+    from parse_dfire_potentials import load_dfire_potentials, get_dfire_type
+    from parse_rasp_potentials import load_rasp_potentials, get_rasp_type
+    from parse_rsrnasp_potentials import load_rsrnasp_potentials, get_rsrnasp_type
+
+    device = torch.device("cpu")
+    
+    # Génération d'un vecteur de distances
+    dists_np = np.linspace(0.1, 30.0, 800)
+    dists = torch.tensor(dists_np, dtype=torch.float32, device=device)
+    
+    score_type = score_type.lower()
+    
+    if score_type == "dfire":
+        path = "potentials/matrice_dfire.dat"
+        if not os.path.exists(path):
+            print(f"Fichier introuvable: {path}")
+            return
+            
+        dict_pots = load_dfire_potentials(path)
+        
+        all_types = set()
+        for t1, t2 in dict_pots.keys():
+            all_types.add(t1)
+            all_types.add(t2)
+        sorted_types = sorted(list(all_types))
+        type_to_idx = {t: i for i, t in enumerate(sorted_types)}
+        num_types = len(sorted_types)
+        num_bins = len(next(iter(dict_pots.values())))
+        
+        potential_tensor = torch.zeros((num_types, num_types, num_bins), dtype=torch.float32, device=device)
+        for (t1, t2), values in dict_pots.items():
+            if t1 in type_to_idx and t2 in type_to_idx:
+                idx1 = type_to_idx[t1]
+                idx2 = type_to_idx[t2]
+                potential_tensor[idx1, idx2, :] = torch.tensor(values, dtype=torch.float32)
+                potential_tensor[idx2, idx1, :] = torch.tensor(values, dtype=torch.float32)
+                
+        type1 = type_to_idx.get(get_dfire_type(atom1, res1), 0)
+        type2 = type_to_idx.get(get_dfire_type(atom2, res2), 0)
+        
+        # Logique exacte de BeadSpringDFIREOptimizer
+        step = 0.7
+        max_dist = 19.6
+        
+        d_scaled = dists / step
+        d_clamp = torch.clamp(d_scaled, 0.0, float(num_bins - 1.0001))
+        
+        i = torch.floor(d_clamp).long()
+        t = d_clamp - i.float()
+        
+        idx0 = torch.clamp(i - 1, min=0)
+        idx1 = i
+        idx2 = torch.clamp(i + 1, max=num_bins - 1)
+        idx3 = torch.clamp(i + 2, max=num_bins - 1)
+        
+        p0 = potential_tensor[type1, type2, idx0]
+        p1 = potential_tensor[type1, type2, idx1]
+        p2 = potential_tensor[type1, type2, idx2]
+        p3 = potential_tensor[type1, type2, idx3]
+        
+        t2 = t * t
+        t3 = t2 * t
+        
+        f0 = -0.5 * t3 + t2 - 0.5 * t
+        f1 = 1.5 * t3 - 2.5 * t2 + 1.0
+        f2 = -1.5 * t3 + 2.0 * t2 + 0.5 * t
+        f3 = 0.5 * t3 - 0.5 * t2
+        
+        interp_energy = f0 * p0 + f1 * p1 + f2 * p2 + f3 * p3
+        cutoff = torch.sigmoid(2.0 * (max_dist - dists))
+        score = interp_energy * cutoff
+        
+        raw_x = np.arange(num_bins) * step
+        raw_y = potential_tensor[type1, type2, :].cpu().numpy()
+        title = f"DFIRE Interpolation (Catmull-Rom)\n{res1}-{atom1} vs {res2}-{atom2}\nClamped at edges, Sigmoid Cutoff at {max_dist}Å"
+        
+    elif score_type == "rasp":
+        path = "potentials/all.nrg"
+        if not os.path.exists(path):
+            print(f"Fichier introuvable: {path}")
+            return
+            
+        taille_mat, dict_pots = load_rasp_potentials(path)
+        
+        potential_tensor = torch.zeros(taille_mat, dtype=torch.float32, device=device)
+        for (k, t1, t2, dist), energy in dict_pots.items():
+            if k < taille_mat[0] and t1 < taille_mat[1] and t2 < taille_mat[2] and dist < taille_mat[3]:
+                potential_tensor[k, t1, t2, dist] = energy
+                potential_tensor[k, t2, t1, dist] = energy
+                
+        type1 = get_rasp_type(res1, atom1, "all")
+        type2 = get_rasp_type(res2, atom2, "all")
+        if type1 == -1: type1 = 0
+        if type2 == -1: type2 = 0
+        
+        # Logique exacte de BeadSpringRASPOptimizer
+        # On bride la valeur k_val à la taille maximale de la matrice chargée (all.nrg = 5)
+        k_max = potential_tensor.size(0) - 1
+        k_val = min(seq_sep, k_max)
+        
+        max_idx = potential_tensor.size(3) - 1
+        d_clamp = torch.clamp(dists, 0.5, float(max_idx - 1.5))
+        d0 = torch.floor(d_clamp).long()
+        d1 = d0 + 1
+        alpha = d_clamp - d0.float()
+        
+        im1 = torch.clamp(d0 - 1, min=0)
+        i2 = torch.clamp(d1 + 1, max=max_idx)
+        
+        p0 = potential_tensor[k_val, type1, type2, im1]
+        p1 = potential_tensor[k_val, type1, type2, d0]
+        p2 = potential_tensor[k_val, type1, type2, d1]
+        p3 = potential_tensor[k_val, type1, type2, i2]
+        
+        interp_energy = 0.5 * (
+            (2 * p1) + (-p0 + p2) * alpha +
+            (2 * p0 - 5 * p1 + 4 * p2 - p3) * alpha**2 +
+            (-p0 + 3 * p1 - 3 * p2 + p3) * alpha**3
+        )
+        
+        cutoff = torch.sigmoid(2.0 * (19.0 - dists))
+        score = interp_energy * cutoff
+        
+        raw_x = np.arange(max_idx + 1)
+        raw_y = potential_tensor[k_val, type1, type2, :].cpu().numpy()
+        title = f"RASP Interpolation (Catmull-Rom)\n{res1}-{atom1} vs {res2}-{atom2}\nseq_sep={seq_sep} => k_val={k_val}, Sigmoid Cutoff at 19.0Å"
+        
+    elif score_type == "rsrnasp":
+        short_path = "potentials/short-ranged.potential"
+        long_path = "potentials/long-ranged.potential"
+        if not os.path.exists(short_path) or not os.path.exists(long_path):
+            print(f"Fichiers introuvables: {short_path}, {long_path}")
+            return
+            
+        num_types, num_bins, dict_pots = load_rsrnasp_potentials(short_path, long_path)
+        
+        potential_tensor = torch.zeros((2, num_types, num_types, num_bins), dtype=torch.float32, device=device)
+        for (k_state, t1, t2, dist_bin), energy in dict_pots.items():
+            potential_tensor[k_state, t1, t2, dist_bin] = energy
+            
+        type1 = get_rsrnasp_type(res1, atom1)
+        type2 = get_rsrnasp_type(res2, atom2)
+        if type1 == -1: type1 = 0
+        if type2 == -1: type2 = 0
+        
+        # Logique exacte de BeadSpringRsRNASPOptimizer
+        step_distance = 0.3
+        cutoff_short = 13.0
+        cutoff_long = 24.0
+        
+        f_N = (-2685.0 / ((num_beads + 16.0) ** 0.5)) + 542.0
+        w_long = 16.0 / f_N if f_N != 0 else 1.0
+        
+        k_state = 1 if seq_sep >= 5 else 0
+        
+        d_scaled = dists / step_distance
+        max_idx = potential_tensor.size(3) - 1
+        d_clamp = torch.clamp(d_scaled, 0.5, float(max_idx - 1.5))
+        d0 = torch.floor(d_clamp).long()
+        d1 = d0 + 1
+        alpha = d_clamp - d0.float()
+        
+        im1 = torch.clamp(d0 - 1, min=0)
+        i2 = torch.clamp(d1 + 1, max=max_idx)
+        
+        p0 = potential_tensor[k_state, type1, type2, im1]
+        p1 = potential_tensor[k_state, type1, type2, d0]
+        p2 = potential_tensor[k_state, type1, type2, d1]
+        p3 = potential_tensor[k_state, type1, type2, i2]
+        
+        interp_energy = 0.5 * (
+            (2 * p1) + (-p0 + p2) * alpha +
+            (2 * p0 - 5 * p1 + 4 * p2 - p3) * alpha**2 +
+            (-p0 + 3 * p1 - 3 * p2 + p3) * alpha**3
+        )
+        
+        cutoff_val = cutoff_long if k_state == 1 else cutoff_short
+        topological_weight = w_long if k_state == 1 else 1.0
+        
+        cutoff_weights = torch.sigmoid(2.0 * (cutoff_val - dists))
+        score = interp_energy * cutoff_weights * topological_weight
+        
+        raw_x = np.arange(num_bins) * step_distance
+        raw_y = potential_tensor[k_state, type1, type2, :].cpu().numpy()
+        title = f"rsRNASP Interpolation (Catmull-Rom)\n{res1}-{atom1} vs {res2}-{atom2}\nseq_sep={seq_sep} => k_state={k_state}, w={topological_weight:.2f}, cutoff={cutoff_val}Å"
+        
+    else:
+        print(f"Type de score inconnu: {score_type}. Utilisez 'dfire', 'rasp' ou 'rsrnasp'.")
+        return
+        
+    # Plot final
+    plt.figure(figsize=(10, 6))
+    
+    # Points discrets de la matrice
+    plt.plot(raw_x, raw_y, 'o', label=f"{score_type.upper()} Points Matrice", color="black", alpha=0.5, markersize=4)
+        
+    # Courbe continue interpolée et modifiée (cutoff + poids)
+    plt.plot(dists_np, score.cpu().numpy(), '-', label=f"Interpolation + ajustements\n(telle qu'optimisée par BeadSpring)", color="red", linewidth=2)
+    
+    plt.title(title)
+    plt.xlabel(f"Distance (Å)")
+    plt.ylabel("Énergie")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    
+    # Ajustement de l'axe y pour voir correctement
+    y_min = max(-5, min(raw_y) * 1.5)
+    y_max = min(20, max(raw_y) * 1.1)
+    
+    # Fallback au cas où tout est à 0 (types invalides etc.)
+    if y_min == y_max == 0:
+        y_min, y_max = -1, 1
+        
+    plt.ylim(y_min, y_max)
+    plt.xlim(0, 30)
+    
+    if save_path:
+        plt.savefig(save_path)
+    plt.show()

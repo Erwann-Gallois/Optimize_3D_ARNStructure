@@ -23,7 +23,8 @@ class FullAtomRASPOptimizer:
         patience_globale=5, 
         taux_refroidissement=0.85, 
         bruit_min=0.01,
-        export_cif=False
+        export_cif=False,
+        k_max=8
     ):
         if not os.path.exists(pdb_path):
             raise FileNotFoundError(f"The PDB file {pdb_path} does not exist.")
@@ -41,6 +42,7 @@ class FullAtomRASPOptimizer:
         self.taux_refroidissement = taux_refroidissement
         self.bruit_min = bruit_min
         self.export_cif = export_cif
+        self.k_max = int(k_max)
         self.verbose = verbose
         self.clash_weight = 100.0
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -174,7 +176,9 @@ class FullAtomRASPOptimizer:
         
         self.pair_i = i_idx[mask_k]
         self.pair_j = j_idx[mask_k]
-        self.k_vals = torch.clamp(sep[mask_k] - 1, 0, 5)
+        # INTEGRATION DU FACTEUR TOPOLOGIQUE (k)
+        # Le seuil optimal pour RASP-ALL est 5 (les interactions au-delà sont non-locales)
+        self.k_vals = torch.clamp(sep[mask_k], max=self.k_max).long()
         self.t1_vals = atom_types[self.pair_i]
         self.t2_vals = atom_types[self.pair_j]
 
@@ -235,21 +239,30 @@ class FullAtomRASPOptimizer:
         # +1e-8 pour éviter le gradient NaN quand la distance est 0
         dists = torch.norm(p1 - p2, dim=1) + 1e-8
         max_dist_idx = self.potential_tensor.size(3) - 1
-        # Soft mask pour interpolation (pas de changement de taille de tenseur !)
-        d_clamp = torch.clamp(dists, 0.0, float(max_dist_idx)) 
+        
+        d_clamp = torch.clamp(dists, 0.5, float(max_dist_idx - 1.5)) # Clamp to grid range
         d0 = torch.floor(d_clamp).long()
-        d1 = torch.clamp(d0 + 1, max=max_dist_idx)
+        d1 = d0 + 1
         alpha = d_clamp - d0.float()
         
-        energy0 = self.potential_tensor[self.k_vals, self.t1_vals, self.t2_vals, d0]
-        energy1 = self.potential_tensor[self.k_vals, self.t1_vals, self.t2_vals, d1]
+        im1 = torch.clamp(d0 - 1, min=0)
+        i2 = torch.clamp(d1 + 1, max=max_dist_idx)
         
-        interp_energy = (1 - alpha) * energy0 + alpha * energy1
-        plateau_val = 2.7
-        corrected_energy = interp_energy - plateau_val
-        # On annule l'énergie des atomes trop éloignés
-        valid_mask = (dists < float(max_dist_idx)).float()
-        rasp_score = torch.sum(corrected_energy * valid_mask)
+        p0 = self.potential_tensor[self.k_vals, self.t1_vals, self.t2_vals, im1]
+        p1 = self.potential_tensor[self.k_vals, self.t1_vals, self.t2_vals, d0]
+        p2 = self.potential_tensor[self.k_vals, self.t1_vals, self.t2_vals, d1]
+        p3 = self.potential_tensor[self.k_vals, self.t1_vals, self.t2_vals, i2]
+        
+        # Catmull-Rom interpolation
+        interp_energy = 0.5 * (
+            (2 * p1) + (-p0 + p2) * alpha +
+            (2 * p0 - 5 * p1 + 4 * p2 - p3) * alpha**2 +
+            (-p0 + 3 * p1 - 3 * p2 + p3) * alpha**3
+        )
+        
+        # Sigmoid cutoff for smooth decay around 19A
+        cutoff = torch.sigmoid(2.0 * (19.0 - dists))
+        rasp_score = torch.sum(interp_energy * cutoff)
 
         # --- 1. Clash Stérique (Utilisation des rayons VDW préparés) ---
         p_i, p_j = current_full_coords[self.pair_i.long()], current_full_coords[self.pair_j.long()]

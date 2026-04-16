@@ -20,7 +20,7 @@ def display_summary(args, output_path):
     console = Console()
     
     # Création du tableau
-    table = Table(title="📋 Résumé des Paramètres d'Optimisation", title_style="bold magenta")
+    table = Table(title="Résumé des Paramètres d'Optimisation", title_style="bold magenta")
 
     # Définition des colonnes
     table.add_column("Paramètre", style="cyan", no_wrap=True)
@@ -72,17 +72,18 @@ def main():
     sequence = ""
     if args.fasta:
         print(f"Reading FASTA file: {args.fasta}")
+        click.secho(f"Reading FASTA file... : {args.fasta}", fg='cyan')
         try:
             from Bio import SeqIO
             record = next(SeqIO.parse(args.fasta, "fasta"))
             sequence = str(record.seq).upper().replace("T", "U")
         except Exception as e:
-            print(f"Error reading FASTA: {e}")
+            click.secho(f"Error reading FASTA: {e}", fg='red')
             sys.exit(1)
     else:
         sequence = args.sequence.upper().replace("T", "U")
 
-    print(f"Sequence loaded ({len(sequence)} nuc): {sequence[:50]}...")
+    click.secho(f"Sequence loaded ({len(sequence)} nuc): {sequence[:50]}...", fg='cyan')
 
     # 2. Initial structure generation
     os.makedirs("fichier_arn", exist_ok=True)
@@ -91,11 +92,11 @@ def main():
     initial_pdb = f"fichier_arn/initial_{int(time.time())}.pdb"
     generer_first_structure(sequence, initial_pdb)
     
-    print("Generating initial straight structure...")
+    click.secho("Generating initial straight structure...", fg='cyan')
     
     
     if not os.path.exists(initial_pdb):
-        print("Error: Initial structure could not be generated.")
+        click.secho("Error: Initial structure could not be generated.", fg='red')
         sys.exit(1)
     # 3. Optimizer selection
     output_path = args.output if args.output else f"resultat/optimized_fa_{args.score}_{int(time.time())}.pdb"
@@ -110,7 +111,6 @@ def main():
 
     if args.confirm:
         # --- ÉTAPE DE VALIDATION AJOUTÉE ---
-        click.secho("\n📋 RÉSUMÉ DES PARAMÈTRES :", fg='cyan', bold=True)
         display_summary(args, output_path)
 
         # Demande de confirmation
@@ -126,7 +126,7 @@ def main():
     
     OptClass = optimizer_classes[args.score]
     
-    print(f"Initializing {args.score} optimizer (full atoms)...")
+    click.secho(f"Initializing {args.score} optimizer (full atoms)...", fg='cyan')
     
     # Unified call for full-atom optimizers
     # Passing everything as named arguments for Clarity
@@ -148,15 +148,12 @@ def main():
     )
 
     # 4. Optimization run
-    print("\n--- Starting optimization ---")
     start_time = time.perf_counter()
     opt.run_optimization()
     end_time = time.perf_counter()
-    print("--- Optimization finished ---")
-    
-    print(f"Best score obtained: {opt.best_score}")
-    print(f"Result saved in: {output_path}")
-    print(f"Execution time: {end_time - start_time:.2f} seconds")
+    click.secho(f"Best score obtained: {opt.best_score}", fg='green')
+    click.secho(f"Result saved in: {output_path}", fg='green')
+    click.secho(f"Execution time: {end_time - start_time:.2f} seconds", fg='green', bold=True)
 
 if __name__ == "__main__":
     main()

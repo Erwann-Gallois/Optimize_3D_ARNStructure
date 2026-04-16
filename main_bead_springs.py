@@ -23,22 +23,22 @@ def display_summary(args, output_path):
     console = Console()
     
     # Création du tableau
-    table = Table(title="📋 Résumé des Paramètres d'Optimisation", title_style="bold magenta")
+    table = Table(title="Résumé des Paramètres d'Optimisation", title_style="bold magenta")
 
     # Définition des colonnes
     table.add_column("Paramètre", style="cyan", no_wrap=True)
     table.add_column("Valeur", style="green")
 
-    table.add_row("Séquence", args.sequence if args.sequence else args.fasta),
-    table.add_row("Fonction de Score", args.score.upper()),
-    table.add_row("Sortie", output_path),
-    table.add_row("Patience (Local/Globale)", f"{args.patience_locale} / {args.patience_globale}"),
-    table.add_row("Min Delta", args.min_delta),
-    table.add_row("Taux de Refroidissement", args.taux_refroidissement),
-    table.add_row("Bruit minimum", f"{args.bruit_min} Å"),
-    table.add_row("Bruit initial", f"{args.noise_coords} Å"),
-    table.add_row("Constante K", args.k),
-    table.add_row("Poids du Score", args.score_weight)
+    table.add_row("Séquence", str(args.sequence if args.sequence else args.fasta))
+    table.add_row("Fonction de Score", str(args.score.upper()))
+    table.add_row("Sortie", str(output_path))
+    table.add_row("Patience (Local/Globale)", str(f"{args.patience_locale} / {args.patience_globale}"))
+    table.add_row("Min Delta", str(args.min_delta))
+    table.add_row("Taux de Refroidissement", str(args.taux_refroidissement))
+    table.add_row("Bruit minimum", str(f"{args.bruit_min} Å"))
+    table.add_row("Bruit initial", str(f"{args.noise_coords} Å"))
+    table.add_row("Constante K", str(args.k))
+    table.add_row("Poids du Score", str(args.score_weight))
     # Affichage
     console.print(Panel(table, title="[bold cyan]Configuration de l'Optimisation[/]", expand=False))
 
@@ -84,12 +84,11 @@ def main():
 
     if args.confirm:
         # --- ÉTAPE DE VALIDATION AJOUTÉE ---
-        click.secho("\n📋 RÉSUMÉ DES PARAMÈTRES :", fg='cyan', bold=True)
         display_summary(args, output_path)
 
         # Demande de confirmation
-        if not click.confirm(click.style("\n🚀 Souhaitez-vous lancer l'optimisation avec ces paramètres ?", fg='magenta', bold=True), default=True):
-            click.secho("❌ Opération annulée par l'utilisateur.", fg='red')
+        if not click.confirm(click.style("\n Souhaitez-vous lancer l'optimisation avec ces paramètres ?", fg='magenta', bold=True), default=True):
+            click.secho("Opération annulée par l'utilisateur.", fg='red')
             sys.exit(0)
 
     optimizer_classes = {
@@ -118,12 +117,9 @@ def main():
         )
 
     # 4. Optimization run
-    click.secho("\n--- Starting optimization ---", fg='blue', bold=True)
-    click.secho(f"Method: Bead-springs | Score: {args.score.upper()} | Output: {output_path}", fg='blue', bold=True)
     start_time = time.perf_counter()
     opt.run_optimization()
     end_time = time.perf_counter()
-    click.secho("--- Optimization finished ---", fg='green', bold=True)
     click.secho(f"Execution time: {end_time - start_time:.2f} seconds", fg='yellow', bold=True)
 if __name__ == "__main__":
     main()

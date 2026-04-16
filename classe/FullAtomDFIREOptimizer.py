@@ -5,6 +5,8 @@ import pandas as pd
 from biopandas.pdb import PandasPdb
 from parse_dfire_potentials import load_dfire_potentials, get_dfire_type
 from Bio.PDB import PDBParser, MMCIFIO
+import click
+from tqdm import tqdm
 
 class FullAtomDFIREOptimizer:
     def __init__(
@@ -21,7 +23,8 @@ class FullAtomDFIREOptimizer:
         min_delta=1e-4, 
         patience_globale=5, 
         bruit_min=0.01,
-        export_cif=False
+        export_cif=False,
+        taux_refroidissement=0.85
     ):
         if not os.path.exists(pdb_path):
             raise FileNotFoundError(f"The PDB file {pdb_path} does not exist.")
@@ -164,18 +167,17 @@ class FullAtomDFIREOptimizer:
         self.c3_idx = torch.tensor(self.c3_idx, dtype=torch.long, device=self.device)
         
         # Préparation des paires pour le calcul du score DFIRE
-        # Préparation des paires pour le calcul du score DFIRE
-        atom_types = torch.tensor([self.type_to_idx[t] for t in self.df_filtered['dfire_type']], dtype=torch.int32).to(self.device)
+        atom_types = torch.tensor([self.type_to_idx[t] for t in self.df_filtered['dfire_type']], dtype=torch.long, device=self.device)
         n_atoms = len(self.df_filtered)
         i_idx, j_idx = torch.triu_indices(n_atoms, n_atoms, offset=1, device=self.device)
         
-        res_tensor = torch.tensor(res_ids, dtype=torch.int32).to(self.device)
+        res_tensor = torch.tensor(res_ids, dtype=torch.long, device=self.device)
         sep = torch.abs(res_tensor[i_idx] - res_tensor[j_idx])
         mask_inter = sep > 2
         
-        # On utilise int32 pour économiser de la mémoire GPU (supporte jusqu'à 2 milliards d'atomes)
-        self.pair_i = i_idx[mask_inter].to(torch.int32)
-        self.pair_j = j_idx[mask_inter].to(torch.int32)
+        # On utilise long d'emblée pour éviter les casts dans la boucle interne
+        self.pair_i = i_idx[mask_inter].long()
+        self.pair_j = j_idx[mask_inter].long()
         self.t1_vals = atom_types[self.pair_i]
         self.t2_vals = atom_types[self.pair_j]
 
@@ -193,8 +195,8 @@ class FullAtomDFIREOptimizer:
     def setup_clash_detection(self):
         # On calcule la somme des rayons pour chaque paire possible
         # r_sum[i, j] = radius_i + radius_j
-        r = self.vdw_radii_map[self.t1_vals.long()]
-        r_j = self.vdw_radii_map[self.t2_vals.long()]
+        r = self.vdw_radii_map[self.t1_vals]
+        r_j = self.vdw_radii_map[self.t2_vals]
         self.min_dist_threshold = (r + r_j) * 0.85
 
     def get_rotation_matrices(self):
@@ -202,22 +204,25 @@ class FullAtomDFIREOptimizer:
         cos_b, sin_b = torch.cos(self.rot_angles[:, 1]), torch.sin(self.rot_angles[:, 1])
         cos_g, sin_g = torch.cos(self.rot_angles[:, 2]), torch.sin(self.rot_angles[:, 2])
 
-        N = self.rot_angles.shape[0]
-        Rx = torch.eye(3, device=self.device).unsqueeze(0).repeat(N, 1, 1)
-        Rx[:, 1, 1], Rx[:, 1, 2], Rx[:, 2, 1], Rx[:, 2, 2] = cos_a, -sin_a, sin_a, cos_a
+        R = torch.empty((self.rot_angles.shape[0], 3, 3), device=self.device, dtype=torch.float32)
+        R[:, 0, 0] = cos_b * cos_g
+        R[:, 0, 1] = sin_a * sin_b * cos_g - cos_a * sin_g
+        R[:, 0, 2] = cos_a * sin_b * cos_g + sin_a * sin_g
+        
+        R[:, 1, 0] = cos_b * sin_g
+        R[:, 1, 1] = sin_a * sin_b * sin_g + cos_a * cos_g
+        R[:, 1, 2] = cos_a * sin_b * sin_g - sin_a * cos_g
+        
+        R[:, 2, 0] = -sin_b
+        R[:, 2, 1] = sin_a * cos_b
+        R[:, 2, 2] = cos_a * cos_b
 
-        Ry = torch.eye(3, device=self.device).unsqueeze(0).repeat(N, 1, 1)
-        Ry[:, 0, 0], Ry[:, 0, 2], Ry[:, 2, 0], Ry[:, 2, 2] = cos_b, sin_b, -sin_b, cos_b
-
-        Rz = torch.eye(3, device=self.device).unsqueeze(0).repeat(N, 1, 1)
-        Rz[:, 0, 0], Rz[:, 0, 1], Rz[:, 1, 0], Rz[:, 1, 1] = cos_g, -sin_g, sin_g, cos_g
-
-        return torch.bmm(Rz, torch.bmm(Ry, Rx))
+        return R
 
     def get_current_full_coords(self):
         R = self.get_rotation_matrices() 
         R_atoms = R[self.atom_to_nuc_idx]
-        rotated_offsets = torch.bmm(R_atoms, self.offsets.unsqueeze(2)).squeeze(2)
+        rotated_offsets = torch.einsum('nij,nj->ni', R_atoms, self.offsets)
         return self.ref_coords[self.atom_to_nuc_idx] + rotated_offsets
 
     def calculate_detailed_scores(self, current_full_coords):
@@ -225,6 +230,7 @@ class FullAtomDFIREOptimizer:
         chunk_size = 5000000 # On traite par blocs de 5 millions de paires pour éviter l'OOM CUDA
         
         dfire_score = torch.tensor(0.0, device=self.device)
+        clash_penalty = torch.tensor(0.0, device=self.device)
         
         max_dist = 19.6
         step = 0.7
@@ -233,12 +239,16 @@ class FullAtomDFIREOptimizer:
         for start_idx in range(0, n_pairs, chunk_size):
             end_idx = min(start_idx + chunk_size, n_pairs)
             
-            p1 = current_full_coords[self.pair_i[start_idx:end_idx].long()]
-            p2 = current_full_coords[self.pair_j[start_idx:end_idx].long()]
+            p1 = current_full_coords[self.pair_i[start_idx:end_idx]]
+            p2 = current_full_coords[self.pair_j[start_idx:end_idx]]
             
             dists = torch.norm(p1 - p2, dim=1) + 1e-8
             
-            # Interpolation linéaire pour le score
+            # --- 1. Clash Stérique fusionné dans le bloc ---
+            thresh = self.min_dist_threshold[start_idx:end_idx]
+            clash_penalty += torch.sum(torch.clamp(thresh - dists, min=0.0)**2) * self.clash_weight
+            
+            # --- 2. Interpolation linéaire pour le score DFIRE ---
             d_scaled = dists / step
             d_clamp = torch.clamp(d_scaled, 0.0, float(num_bins - 1))
             
@@ -249,25 +259,17 @@ class FullAtomDFIREOptimizer:
             t1 = self.t1_vals[start_idx:end_idx]
             t2 = self.t2_vals[start_idx:end_idx]
             
-            energy0 = self.potential_tensor[t1.long(), t2.long(), d0]
-            energy1 = self.potential_tensor[t1.long(), t2.long(), d1]
+            energy0 = self.potential_tensor[t1, t2, d0]
+            energy1 = self.potential_tensor[t1, t2, d1]
             
             interp_energy = (1 - alpha) * energy0 + alpha * energy1
             
             # Masque pour les distances > 19.6
             valid_mask = (dists < max_dist).float()
-            dfire_score = dfire_score + torch.sum(interp_energy * valid_mask)
+            dfire_score += torch.sum(interp_energy * valid_mask)
+            
 
-        # --- 1. Clash Stérique (Utilisation des rayons VDW préparés) ---
-        p_i, p_j = current_full_coords[self.pair_i.long()], current_full_coords[self.pair_j.long()]
-        dist_pairs = torch.norm(p_i - p_j, dim=1)
-
-        # Utilise le seuil dynamique calculé dans setup_clash_detection
-        thresholds = self.min_dist_threshold # Déjà sur le bon device
-        clash_penalty = torch.sum(torch.clamp(thresholds - dist_pairs, min=0.0)**2) * self.clash_weight
-        
-
-        # --- 2. Robustesse Backbone (Liaisons + Angles + P-P) ---
+        # --- 3. Robustesse Backbone (Liaisons + Angles + P-P) ---
         bb_penalty = torch.tensor(0.0, device=self.device)
         if len(self.bb_i_idx) > 0:
             # A. Liaison O3'-P (1.61 A)
@@ -293,30 +295,29 @@ class FullAtomDFIREOptimizer:
         Optimisation dynamique sans limite fixe d'époques ni de cycles.
         """
         optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
-        
         best_ref_coords = self.ref_coords.clone().detach()
         best_rot_angles = self.rot_angles.clone().detach()
         self.best_score = float('inf')
 
         if self.verbose:
-            print(f"Starting dynamic DFIRE optimization...")
-            print(f"Number of atom pairs to process: {self.pair_i.size(0):,}")
+            click.secho(f"\nStarting Dynamic DFIRE Optimization", fg='green', bold=True)
+            click.secho(f"Number of atom pairs to process: {self.pair_i.size(0):,}", fg='magenta')
         
         current_noise_c = self.noise_coords
         current_noise_a = self.noise_angles
         cycles_sans_amelioration = 0
         cycle_count = 0
-
+        shake_pbar = tqdm(desc="Global Optimization", unit=" cycles", dynamic_ncols=True)
         # EXTERNAL LOOP: Shakes (Exploration)
         while current_noise_c > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
             cycle_count += 1
-            if self.verbose:
-                print(f"\n--- Exploration phase {cycle_count} (Noise: {current_noise_c:.4f}Å / {current_noise_a:.4f}rad) ---")
-            
+            phase_best_score = float('inf')
+            phase_best_coords = self.ref_coords.clone().detach()
+            phase_best_rot = self.rot_angles.clone().detach()           
             patience_counter = 0
             prev_loss = float('inf')
             epoch = 0
-            
+            pbar = tqdm(total=10000, desc=f"  └─ Phase {cycle_count}", unit="it", leave=False, dynamic_ncols=True)
             # INTERNAL LOOP: Local minimization
             while True:
                 optimizer.zero_grad()
@@ -330,10 +331,10 @@ class FullAtomDFIREOptimizer:
 
                 current_loss = loss.item()
 
-                if current_loss < self.best_score:
-                    self.best_score = current_loss
-                    best_ref_coords.copy_(self.ref_coords.detach())
-                    best_rot_angles.copy_(self.rot_angles.detach())
+                if current_loss < phase_best_score:
+                    phase_best_score = current_loss
+                    phase_best_coords.copy_(self.ref_coords.detach())
+                    phase_best_rot.copy_(self.rot_angles.detach())
                 # Condition d'arrêt local (ΔE)
                 delta_loss = abs(prev_loss - current_loss)
                 if delta_loss < self.min_delta:
@@ -344,42 +345,45 @@ class FullAtomDFIREOptimizer:
                 prev_loss = current_loss
                 epoch += 1
 
-                if epoch % 1000 == 0:
-                    if self.verbose:
-                        print(f"  Iteration {epoch:4d} | Total: {current_loss:.4f} | DFIRE: {score.item():.4f} | BB: {bb_penalty.item():.4f} | Clash: {clash_penalty.item():.4f}")
-                
-                if patience_counter >= self.patience_locale:
-                    if self.verbose:
-                        print(f"Local minimum reached in {epoch} iterations.")
-                    break
-                
-                if epoch > 10000:
-                    if self.verbose:
-                        print(f"Local phase too long, safety cutoff at 10000.")
-                    break
+                pbar.update(1)
+                if epoch % 100 == 0:
+                    pbar.set_postfix({
+                        "Total": f"{current_loss:.2f}",
+                        "Backbone": f"{bb_penalty.item():.2f}",
+                        "Clash": f"{clash_penalty.item():.2f}",
+                        "DFIRE": f"{score.item():.2f}"
+                    })                                                  
 
+                
+                if patience_counter >= self.patience_locale or epoch >= 10000:
+                    break
                 del coords, score, bb_penalty, clash_penalty, loss
-
+            pbar.close() # On ferme la barre locale proprement ici (une seule fois)
             # --- CYCLE SUMMARY ---
-            if current_loss < (self.best_score - self.min_delta):
+            if phase_best_score < (self.best_score - self.min_delta):
                 if self.verbose:
-                    print(f"New absolute record! {self.best_score:.4f} -> {current_loss:.4f}")
-                self.best_score = current_loss
-                best_ref_coords.copy_(self.ref_coords)
-                best_rot_angles.copy_(self.rot_angles)
+                    shake_pbar.write(click.style(f"New absolute record! {self.best_score:.4f} -> {phase_best_score:.4f}", fg='green', bold=True))
+                self.best_score = phase_best_score
+                best_ref_coords.copy_(phase_best_coords)
+                best_rot_angles.copy_(phase_best_rot)
                 cycles_sans_amelioration = 0
             else:
                 cycles_sans_amelioration += 1
                 if self.verbose:
-                    print(f"No record. (Failures: {cycles_sans_amelioration}/{self.patience_globale})")
+                    shake_pbar.write(click.style(f"No record. (Failures: {cycles_sans_amelioration}/{self.patience_globale})", fg='red', bold=True))
 
+            shake_pbar.update(1)
+            shake_pbar.set_postfix({
+                "Best": f"{self.best_score:.2f}", 
+                "Fail": f"{cycles_sans_amelioration}/{self.patience_globale}",
+                "Noise Coords": f"{current_noise_c:.3f}",
+                "Noise Angles": f"{current_noise_a:.3f}"
+            })
             # --- PREPARING NEXT CYCLE ---
             current_noise_c *= self.taux_refroidissement
             current_noise_a *= self.taux_refroidissement
             
-            if current_noise_c > self.bruit_min and cycles_sans_amelioration < self.patience_globale:
-                if self.verbose:
-                    print(f"Applying SHAKE. Returning to the best conformation and adding noise.")
+            if (current_noise_c > self.bruit_min and current_noise_a > self.bruit_min) and cycles_sans_amelioration < self.patience_globale:
                 with torch.no_grad():
                     self.ref_coords.copy_(best_ref_coords)
                     self.rot_angles.copy_(best_rot_angles)
@@ -388,8 +392,8 @@ class FullAtomDFIREOptimizer:
                 
                 optimizer = torch.optim.Adam([self.ref_coords, self.rot_angles], lr=self.lr)
                 torch.cuda.empty_cache()
-
-        print("\n Optimization finished.")
+        shake_pbar.close()
+        click.secho(f"\n Optimization finished.", fg='green')
         with torch.no_grad():
             self.ref_coords.copy_(best_ref_coords)
             self.rot_angles.copy_(best_rot_angles)
@@ -404,7 +408,7 @@ class FullAtomDFIREOptimizer:
         out_ppdb.df["ATOM"]["chain_id"] = "A"
         out_ppdb.to_pdb(path=self.output_path)
         if self.verbose:
-            print(f"File saved: {self.output_path}")
+            click.secho(f"File saved: {self.output_path}", fg='green')
 
         if self.export_cif:
             self.save_as_cif(self.output_path)
@@ -413,7 +417,7 @@ class FullAtomDFIREOptimizer:
         """Converts a PDB file to CIF format using BioPython."""
         if not os.path.exists(pdb_path):
             if self.verbose:
-                print(f"Error: File {pdb_path} not found for CIF export.")
+                click.secho(f"Error: File {pdb_path} not found for CIF export.", fg='red')
             return
         
         cif_path = pdb_path.replace(".pdb", ".cif")
@@ -423,4 +427,4 @@ class FullAtomDFIREOptimizer:
         io.set_structure(structure)
         io.save(cif_path)
         if self.verbose:
-            print(f"Structure also saved in CIF format: {cif_path}")
+            click.secho(f"Structure also saved in CIF format: {cif_path}", fg='green')

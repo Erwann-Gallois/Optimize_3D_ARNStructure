@@ -88,6 +88,13 @@ class BeadSpringRsRNASPOptimizer:
 
     def load_structure(self, sequence):
         self.num_beads = len(sequence)
+        
+        # --- CALCUL DU POIDS (w) POUR LA LONGUE PORTÉE ---
+        # Selon l'article rsRNASP : f(N) = -2685 / (N + 16)^0.5 + 542
+        f_N = (-2685.0 / ((self.num_beads + 16.0) ** 0.5)) + 542.0
+        self.w_long = 16.0 / f_N if f_N != 0 else 1.0
+        # -------------------------------------------------
+        
         bead_coords = []
         bead_rows = []
 
@@ -112,7 +119,8 @@ class BeadSpringRsRNASPOptimizer:
         sep = j - i
         
         # Paires pour volume exclu (WCA) et RsRNASP
-        mask_valid = sep > 1
+        # Dans rsRNASP, les interactions avec une séparation de 1 ou 2 sont ignorées (k > 2)
+        mask_valid = sep > 2
         self.pair_i = i[mask_valid].to(self.device)
         self.pair_j = j[mask_valid].to(self.device)
         self.sep = sep[mask_valid].to(self.device)
@@ -120,7 +128,7 @@ class BeadSpringRsRNASPOptimizer:
         if getattr(self, 'potential_tensor', None) is not None:
             
             # Mapping K_state pour rsRNASP
-            # Si |i-j| <= 4 -> k_state = 0 (Short range)
+            # Si 2 < |i-j| <= 4 -> k_state = 0 (Short range)
             # Si |i-j| >= 5 -> k_state = 1 (Long range)
             self.k_states = (self.sep >= 5).long()
 
@@ -184,10 +192,16 @@ class BeadSpringRsRNASPOptimizer:
                               torch.tensor(self.cutoff_short, device=self.device), 
                               torch.tensor(self.cutoff_long, device=self.device))
         
+        # Poids dynamiques : 1.0 pour short-range, w_long pour long-range
+        topological_weights = torch.where(self.k_states == 0,
+                                          torch.tensor(1.0, device=self.device),
+                                          torch.tensor(self.w_long, device=self.device))
+        
         # Cutoff sigmoid pour une annulation douce et continue
         cutoff_weights = torch.sigmoid(2.0 * (cutoffs - dists))
         
-        score = torch.sum(interp_energy * cutoff_weights)
+        # Application de l'énergie interpolée * lissage (cutoff) * poids topologique (w)
+        score = torch.sum(interp_energy * cutoff_weights * topological_weights)
         
         return self.rsrnasp_weight * score
 
@@ -327,12 +341,14 @@ class BeadSpringRsRNASPOptimizer:
             if phase_best_score < (self.best_score - self.min_delta):
                 if self.verbose:
                     shake_pbar.write(click.style(f"New record: {phase_best_score:.4f}", fg='green', bold=True))
-                
                 self.best_score = phase_best_score
                 best_coords.copy_(phase_best_coords)
                 cycles_sans_amelioration = 0  # On a trouvé un nouveau bassin, on réinitialise les échecs
             else:
                 cycles_sans_amelioration += 1
+                if self.verbose:
+                    shake_pbar.write(click.style(f"No record. Phase score: {phase_best_score:.4f} -> {self.best_score:.4f} (Failures: {cycles_sans_amelioration}/{self.patience_globale})", fg='red', bold=True))
+
 
             shake_pbar.update(1)
             shake_pbar.set_postfix({

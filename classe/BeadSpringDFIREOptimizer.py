@@ -335,7 +335,7 @@ class BeadSpringDFIREOptimizer:
             if phase_best_score < (self.best_score - self.min_delta):
                 if self.verbose:
                     # Utiliser tqdm.write pour ne pas casser les barres
-                    shake_pbar.write(click.style(f"🌟 New record: {phase_best_score:.4f}", fg='green', bold=True))
+                    shake_pbar.write(click.style(f"New record: {phase_best_score:.4f}", fg='green', bold=True))
                 
                 self.best_score = phase_best_score
                 best_coords.copy_(phase_best_coords)
