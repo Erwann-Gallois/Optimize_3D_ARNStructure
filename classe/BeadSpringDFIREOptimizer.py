@@ -17,7 +17,6 @@ class BeadSpringDFIREOptimizer:
         bead_atom="C3'",
         k=20.0,
         l0=5.5,
-        type_RASP="all",
         score_weight=50.0,
         verbose=True,
         patience_locale=100, 
@@ -44,10 +43,7 @@ class BeadSpringDFIREOptimizer:
         # Angle parameters
         self.k_angle = float(k_angle)
         self.theta0_rad = float(theta0) * np.pi / 180.0
-
-
-        # RASP parameters
-        self.type_RASP = type_RASP
+        
         self.dfire_weight = float(score_weight)
 
         # FENE-Fraenkel parameters
@@ -341,6 +337,8 @@ class BeadSpringDFIREOptimizer:
                 best_coords.copy_(phase_best_coords)
                 cycles_sans_amelioration = 0
             else:
+                if self.verbose:
+                    shake_pbar.write(click.style(f"No record. Phase score: {phase_best_score:.4f} -> {self.best_score:.4f} (Failures: {cycles_sans_amelioration}/{self.patience_globale})", fg='red', bold=True))
                 cycles_sans_amelioration += 1
 
             # Mise à jour de la barre globale (UNE SEULE FOIS par cycle de shake)

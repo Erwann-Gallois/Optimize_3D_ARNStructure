@@ -3,7 +3,7 @@ import os
 import csv
 from Bio.PDB.MMCIF2Dict import MMCIF2Dict
 
-def extract_individual_distances(folder_path, output_path, ref_atom="C3'"):
+def extract_individual_distances(folder_path, output_path, save = False, ref_atom="C3'"):
     # List to store each individual measurement
     # Format: [Filename, Chain, Start_Index, Distance]
     dist_data = []
@@ -51,11 +51,12 @@ def extract_individual_distances(folder_path, output_path, ref_atom="C3'"):
             print(f"Error on {filename}: {e}")
 
     # Saving both files
-    for path, data, head in [(output_path + "_dist.csv", dist_data, ["File", "Chain", "Residues", "Distance_A"]), 
-                             (output_path + "_angle.csv", angle_data, ["File", "Chain", "Residues", "Angle_Deg"])]:
-        with open(path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(head)
+    if save:    
+        for path, data, head in [(output_path + "_" + ref_atom + "_dist.csv", dist_data, ["File", "Chain", "Residues", "Distance_A"]), 
+                                 (output_path + "_" + ref_atom + "_angle.csv", angle_data, ["File", "Chain", "Residues", "Angle_Deg"])]:
+            with open(path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(head)
             writer.writerows(data)
 
     # Summary in console
@@ -67,6 +68,16 @@ def extract_individual_distances(folder_path, output_path, ref_atom="C3'"):
         print(f"Global mean: {np.mean(toutes_les_dist):.4f} Å")
         print(f"Standard deviation: {np.std(toutes_les_dist):.4f} Å")
         print(f"CSV files created: {output_path}_dist.csv and {output_path}_angle.csv")
+    return np.mean(toutes_les_dist), np.std(toutes_les_dist)
 
 # Run on your folder
-extract_individual_distances("dataset/0-1", "distances_individuelles_0-1.csv")
+ref_atom = ["C1'", "C3'", "C4'"]
+with open("results.csv", "w") as f:
+    writer = csv.writer(f)
+    writer.writerow(["Ref Atom", "Mean", "Standard Deviation"])
+for ref in ref_atom:
+    mean, std = extract_individual_distances("dataset/0-1", "distances_individuelles_0-1", ref_atom=ref)
+    with open("results.csv", "a") as f:
+        writer = csv.writer(f)
+        writer.writerow([ref, mean, std])
+    print(f"Mean: {mean:.4f} Å, Standard deviation: {std:.4f} Å")

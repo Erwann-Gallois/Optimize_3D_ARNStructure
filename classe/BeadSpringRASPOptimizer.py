@@ -29,7 +29,6 @@ class BeadSpringRASPOptimizer:
         taux_refroidissement=0.85, 
         bruit_min=0.01,
         export_cif=False,
-        k_max = 8
     ):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.lr = lr
@@ -47,7 +46,6 @@ class BeadSpringRASPOptimizer:
         # RASP parameters
         self.type_RASP = type_RASP
         self.rasp_weight = float(score_weight)
-        self.k_max = int(k_max)
 
         # FENE-Fraenkel parameters
         self.k = float(k)
@@ -60,6 +58,12 @@ class BeadSpringRASPOptimizer:
         self.setup_pairs()
 
     def load_dict_potentials(self):
+        if self.bead_atom == "C3'":
+           self.type_RASP = "c3"
+           self.k_max = 8
+        else:
+           self.type_RASP = "all"
+           self.k_max = 5
         path = f"potentials/{self.type_RASP}.nrg"
         if os.path.exists(path):
             taille_mat, dict_pots = load_rasp_potentials(path)
@@ -322,6 +326,8 @@ class BeadSpringRASPOptimizer:
                 best_coords.copy_(phase_best_coords)
                 cycles_sans_amelioration = 0  # On a trouvé un nouveau bassin, on réinitialise les échecs
             else:
+                if self.verbose:
+                    shake_pbar.write(click.style(f"No record. Phase score: {phase_best_score:.4f} -> {self.best_score:.4f} (Failures: {cycles_sans_amelioration}/{self.patience_globale})", fg='red', bold=True))
                 cycles_sans_amelioration += 1
 
             shake_pbar.update(1)

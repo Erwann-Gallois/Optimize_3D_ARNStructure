@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 import time
+import pandas as pd
 import click
 
 # Add current folder and 'classe' folder to PYTHONPATH for imports
@@ -90,7 +91,14 @@ def main():
         if not click.confirm(click.style("\n Souhaitez-vous lancer l'optimisation avec ces paramètres ?", fg='magenta', bold=True), default=True):
             click.secho("Opération annulée par l'utilisateur.", fg='red')
             sys.exit(0)
-
+    dist_csv = pd.read_csv("results.csv")
+    result = dist_csv[dist_csv["Ref Atom"] == args.bead_atom]
+    if (result.empty):
+        click.secho("No mean distance found for bead atom, using default value.", fg='yellow')
+        l0 = 5.5
+    else : 
+        l0 = result["Mean"].item()    
+    click.secho(f"Mean distance for bead atom {args.bead_atom}: {l0}", fg='green')
     optimizer_classes = {
         "rasp": BeadSpringRASPOptimizer,
         "dfire": BeadSpringDFIREOptimizer,
@@ -105,7 +113,7 @@ def main():
             noise_coords=args.noise_coords,
             bead_atom=args.bead_atom,
             k=args.k,
-            l0=args.l0,
+            l0=l0,
             verbose=args.verbose,
             patience_locale=args.patience_locale,
             patience_globale=args.patience_globale,
